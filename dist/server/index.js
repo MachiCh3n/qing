@@ -348,22 +348,55 @@ async function postponeMissedTicket(env, ticket, now) {
   if (targetOrder > ticket.queueOrder) {
     statements.push(env.DB.prepare("UPDATE tickets SET queue_order = queue_order - 1 WHERE status IN ('waiting', 'missed') AND queue_order > ? AND queue_order <= ?").bind(ticket.queueOrder, targetOrder));
   }
-  statements.push(env.DB.prepare("UPDATE tickets SET status = 'missed', queue_order = ?, missed_count = 1, missed_at = ?, estimated_minutes = ?, estimated_entry_at = ?, updated_at = ? WHERE id = ? AND status = 'called'").bind(targetOrder, now, estimatedMinutes, estimatedEntryAt, now, ticket.id));
+  statements.push(env.DB.prepare("UPDATE tickets SET status = 'missed', queue_order = ?, missed_count = 1, missed_at = ?, estimated_minutes = ?, estimated_entry_at = ?, reminder_sent_at = NULL, reminder_provider = NULL, reminder_provider_id = NULL, reminder_error = NULL, updated_at = ? WHERE id = ? AND status IN ('waiting', 'called') AND missed_count = 0").bind(targetOrder, now, estimatedMinutes, estimatedEntryAt, now, ticket.id));
   await env.DB.batch(statements);
+}
+
+async function cancelAfterSecondMiss(env, ticket, now) {
+  await env.DB.batch([
+    env.DB.prepare("UPDATE tickets SET status = 'cancelled', missed_count = 2, cancelled_at = ?, updated_at = ? WHERE id = ? AND status IN ('called', 'missed') AND missed_count >= 1").bind(now, now, ticket.id),
+    env.DB.prepare("DELETE FROM push_subscriptions WHERE ticket_id = ?").bind(ticket.id)
+  ]);
 }
 
 async function processExpiredCalls(env, now = new Date()) {
   const checkedAt = now.toISOString();
   const cutoff = new Date(now.getTime() - SEAT_HOLD_MINUTES * 60_000).toISOString();
-  const expired = await env.DB.prepare("SELECT * FROM tickets WHERE status = 'called' AND called_at IS NOT NULL AND called_at <= ? ORDER BY called_at").bind(cutoff).all();
+  const expired = await env.DB.prepare(`
+    SELECT id FROM tickets
+    WHERE (status = 'called' AND called_at IS NOT NULL AND called_at <= ?)
+       OR (status IN ('waiting', 'missed') AND estimated_entry_at IS NOT NULL AND estimated_entry_at <= ?)
+    ORDER BY COALESCE(called_at, estimated_entry_at)
+  `).bind(cutoff, cutoff).all();
   for (const row of expired.results || []) {
-    const ticket = rowToTicket(row);
-    if (ticket.missedCount >= 1) {
-      await env.DB.prepare("UPDATE tickets SET status = 'cancelled', missed_count = missed_count + 1, cancelled_at = ?, updated_at = ? WHERE id = ? AND status = 'called'").bind(checkedAt, checkedAt, ticket.id).run();
-    } else {
-      await postponeMissedTicket(env, ticket, checkedAt);
-    }
+    const ticket = await getTicket(env, row.id);
+    if (!ticket) continue;
+    const deadline = ticket.status === "called" ? ticket.calledAt : ticket.estimatedEntryAt;
+    if (!deadline || new Date(deadline).getTime() > now.getTime() - SEAT_HOLD_MINUTES * 60_000) continue;
+    if (ticket.status === "missed" || ticket.missedCount >= 1) await cancelAfterSecondMiss(env, ticket, checkedAt);
+    else await postponeMissedTicket(env, ticket, checkedAt);
   }
+}
+
+async function callTicketAndAdvance(env, ticket, now) {
+  if (!ticket || !["waiting", "missed", "called"].includes(ticket.status)) throw new Error("此號碼目前無法叫號");
+  const preceding = await env.DB.prepare("SELECT id FROM tickets WHERE date_key = ? AND id != ? AND status IN ('waiting', 'missed', 'called') AND queue_order < ? ORDER BY queue_order, joined_at").bind(ticket.dateKey, ticket.id, ticket.queueOrder).all();
+  for (const row of preceding.results || []) {
+    const earlier = await getTicket(env, row.id);
+    if (!earlier) continue;
+    if (earlier.status === "missed" || earlier.missedCount >= 1) await cancelAfterSecondMiss(env, earlier, now);
+    else await postponeMissedTicket(env, earlier, now);
+  }
+  let called = await getTicket(env, ticket.id);
+  if (!called) throw new Error("找不到候位資料");
+  if (called.status !== "called") {
+    const result = await env.DB.prepare("UPDATE tickets SET status = 'called', called_at = ?, estimated_minutes = 0, estimated_entry_at = ?, current_number = number, updated_at = ? WHERE id = ? AND status IN ('waiting', 'missed') RETURNING *").bind(now, now, now, ticket.id).run();
+    const row = result.results?.[0];
+    if (!row) throw new Error("此號碼目前無法叫號");
+    called = rowToTicket(row);
+  }
+  await env.DB.prepare("INSERT INTO settings (key, value, updated_at) VALUES ('currentNumber', ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at").bind(called.number, now).run();
+  return called;
 }
 
 async function processQueueAutomation(env) {
@@ -453,7 +486,8 @@ async function handleApi(request, env, url, ctx) {
 
   if (pathname.startsWith("/api/admin/") && !(await isAdmin(request, env))) return fail(request, env, 401, "後台密碼錯誤");
   if (method === "GET" && pathname === "/api/admin/queue") {
-    ctx.waitUntil(processQueueAutomation(env));
+    await processExpiredCalls(env);
+    ctx.waitUntil(processDueReminders(env));
     const filter = searchParams.get("status") || "active";
     let query = "SELECT * FROM tickets ORDER BY joined_at";
     if (filter === "active") query = "SELECT * FROM tickets WHERE status IN ('waiting', 'called', 'missed') ORDER BY CASE WHEN status = 'called' THEN 0 ELSE 1 END, queue_order, joined_at";
@@ -479,6 +513,11 @@ async function handleApi(request, env, url, ctx) {
     const body = await readBody(request);
     const updates = [];
     const now = new Date().toISOString();
+    let requestedCurrentNumber = null;
+    if (body.currentNumber !== undefined) {
+      requestedCurrentNumber = String(body.currentNumber).toUpperCase().trim();
+      if (!validNumber(requestedCurrentNumber)) return fail(request, env, 400, "目前叫號格式需為 A001");
+    }
     if (body.defaultWaitMinutes !== undefined) {
       const value = fiveMinuteValue(body.defaultWaitMinutes, 0, 600, DEFAULT_SETTINGS.defaultWaitMinutes);
       updates.push(env.DB.prepare("INSERT INTO settings (key, value, updated_at) VALUES ('defaultWaitMinutes', ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at").bind(String(value), now));
@@ -487,15 +526,14 @@ async function handleApi(request, env, url, ctx) {
       const value = fiveMinuteValue(body.avgMinutesPerGroup, 5, 120, DEFAULT_SETTINGS.avgMinutesPerGroup);
       updates.push(env.DB.prepare("INSERT INTO settings (key, value, updated_at) VALUES ('avgMinutesPerGroup', ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at").bind(String(value), now));
     }
-    if (body.currentNumber !== undefined) {
-      const number = String(body.currentNumber).toUpperCase().trim();
-      if (!validNumber(number)) return fail(request, env, 400, "目前叫號格式需為 A001");
-      updates.push(env.DB.prepare("INSERT INTO settings (key, value, updated_at) VALUES ('currentNumber', ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at").bind(number, now));
+    if (updates.length) await env.DB.batch(updates);
+    if (requestedCurrentNumber) {
+      const selectedRow = await env.DB.prepare("SELECT * FROM tickets WHERE date_key = ? AND number = ? LIMIT 1").bind(dateKey(), requestedCurrentNumber).first();
+      if (!selectedRow) return fail(request, env, 404, "今日候位紀錄中找不到這個號碼");
+      try { await callTicketAndAdvance(env, rowToTicket(selectedRow), now); }
+      catch (error) { return fail(request, env, 409, error.message); }
     }
-    updates.push(env.DB.prepare("SELECT key, value FROM settings"));
-    updates.push(effectiveCurrentNumberStatement(env));
-    const results = await env.DB.batch(updates);
-    return json(request, env, settingsFromRows(results.at(-2)?.results || [], results.at(-1)?.results?.[0]?.number));
+    return json(request, env, await getSettings(env));
   }
 
   const adminMatch = pathname.match(/^\/api\/admin\/queue\/([0-9a-f-]+)(?:\/(remind|call|complete|cancel))?$/i);
@@ -519,13 +557,10 @@ async function handleApi(request, env, url, ctx) {
   }
   if (adminMatch && method === "POST" && adminMatch[2] === "call") {
     const now = new Date().toISOString();
-    const [ticketResult] = await env.DB.batch([
-      env.DB.prepare("UPDATE tickets SET status = 'called', called_at = ?, estimated_minutes = 0, estimated_entry_at = ?, current_number = number, updated_at = ? WHERE id = ? AND status IN ('waiting', 'missed') RETURNING *").bind(now, now, now, adminMatch[1]),
-      env.DB.prepare("INSERT INTO settings (key, value, updated_at) SELECT 'currentNumber', number, ? FROM tickets WHERE id = ? AND status = 'called' AND called_at = ? ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at").bind(now, adminMatch[1], now)
-    ]);
-    const row = ticketResult.results?.[0];
-    if (!row) return fail(request, env, 409, "此號碼目前無法叫號");
-    let ticket = rowToTicket(row);
+    const original = await getTicket(env, adminMatch[1]);
+    let ticket;
+    try { ticket = await callTicketAndAdvance(env, original, now); }
+    catch (error) { return fail(request, env, 409, error.message); }
     try {
       const message = `${STORE_NAME}通知：候位號碼 ${ticket.number} 已叫號，請儘速至櫃台報到入席。`;
       const delivery = await sendSms(env, ticket, message, "called");
