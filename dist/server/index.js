@@ -1,4 +1,5 @@
 const REMINDER_MINUTES = 5;
+const SEAT_HOLD_MINUTES = 10;
 const STORE_NAME = "慶壽喜燒";
 const DEFAULT_SETTINGS = {
   storeId: "qing-linkou",
@@ -87,13 +88,16 @@ async function publicTicket(env, ticket) {
   return { ...safe, ahead: Number(aheadRow?.count || 0), currentNumber: settings.currentNumber };
 }
 
-function isAdmin(request, env) {
+async function isAdmin(request, env) {
   const expected = String(env.ADMIN_KEY || "");
   const actual = String(request.headers.get("X-Admin-Key") || "");
-  if (!expected || expected.length !== actual.length) return false;
-  let different = 0;
-  for (let index = 0; index < expected.length; index += 1) different |= expected.charCodeAt(index) ^ actual.charCodeAt(index);
-  return different === 0;
+  if (!expected) return false;
+  const encoder = new TextEncoder();
+  const [expectedHash, actualHash] = await Promise.all([
+    crypto.subtle.digest("SHA-256", encoder.encode(expected)),
+    crypto.subtle.digest("SHA-256", encoder.encode(actual))
+  ]);
+  return crypto.subtle.timingSafeEqual(expectedHash, actualHash);
 }
 
 async function logSms(env, ticket, event, message, provider, providerId = null) {
@@ -148,10 +152,22 @@ async function processDueReminders(env) {
   }
 }
 
+async function processExpiredCalls(env, now = new Date()) {
+  const checkedAt = now.toISOString();
+  const cutoff = new Date(now.getTime() - SEAT_HOLD_MINUTES * 60_000).toISOString();
+  await env.DB.prepare("UPDATE tickets SET status = 'missed', updated_at = ? WHERE status = 'called' AND called_at IS NOT NULL AND called_at <= ?")
+    .bind(checkedAt, cutoff).run();
+}
+
+async function processQueueAutomation(env) {
+  await processExpiredCalls(env);
+  await processDueReminders(env);
+}
+
 async function handleApi(request, env, url) {
   const { pathname, searchParams } = url;
   const method = request.method;
-  if (method === "GET" && pathname === "/api/health") return json(request, env, { ok: true, storage: "d1", reminderMinutes: REMINDER_MINUTES });
+  if (method === "GET" && pathname === "/api/health") return json(request, env, { ok: true, storage: "d1", reminderMinutes: REMINDER_MINUTES, seatHoldMinutes: SEAT_HOLD_MINUTES });
 
   if (method === "POST" && pathname === "/api/queue") {
     const body = await readBody(request);
@@ -180,7 +196,7 @@ async function handleApi(request, env, url) {
 
   const publicMatch = pathname.match(/^\/api\/queue\/([0-9a-f-]+)$/i);
   if (publicMatch && method === "GET") {
-    await processDueReminders(env);
+    await processQueueAutomation(env);
     const ticket = await getTicket(env, publicMatch[1]);
     return ticket ? json(request, env, await publicTicket(env, ticket)) : fail(request, env, 404, "找不到候位資料");
   }
@@ -190,9 +206,9 @@ async function handleApi(request, env, url) {
     return result.meta.changes ? json(request, env, { ok: true, status: "cancelled" }) : fail(request, env, 404, "找不到候位資料");
   }
 
-  if (pathname.startsWith("/api/admin/") && !isAdmin(request, env)) return fail(request, env, 401, "後台密碼錯誤");
+  if (pathname.startsWith("/api/admin/") && !(await isAdmin(request, env))) return fail(request, env, 401, "後台密碼錯誤");
   if (method === "GET" && pathname === "/api/admin/queue") {
-    await processDueReminders(env);
+    await processQueueAutomation(env);
     const filter = searchParams.get("status") || "active";
     let query = "SELECT * FROM tickets ORDER BY joined_at";
     if (filter === "active") query = "SELECT * FROM tickets WHERE status IN ('waiting', 'called') ORDER BY joined_at";
@@ -272,5 +288,5 @@ async function fetchHandler(request, env) {
 
 export default {
   fetch: fetchHandler,
-  async scheduled(_controller, env, ctx) { ctx.waitUntil(processDueReminders(env)); }
+  async scheduled(_controller, env, ctx) { ctx.waitUntil(processQueueAutomation(env)); }
 };
