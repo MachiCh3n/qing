@@ -8,6 +8,7 @@ const ROOT = dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = process.env.QING_DATA_DIR ? resolve(process.env.QING_DATA_DIR) : join(ROOT, "data");
 const PORT = Number(process.env.PORT || 8000);
 const ADMIN_KEY = process.env.ADMIN_KEY || "qing-admin";
+const CORS_ORIGINS = String(process.env.CORS_ORIGIN || "").split(",").map(value => value.trim()).filter(Boolean);
 const REMINDER_MINUTES = 5;
 const STORE_NAME = "慶壽喜燒";
 const QUEUE_FILE = join(DATA_DIR, "queue.json");
@@ -308,6 +309,14 @@ async function handleApi(req, res, url) {
 const server = createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
   try {
+    const origin = String(req.headers.origin || "");
+    if (origin && (CORS_ORIGINS.includes("*") || CORS_ORIGINS.includes(origin))) {
+      res.setHeader("Access-Control-Allow-Origin", CORS_ORIGINS.includes("*") ? "*" : origin);
+      res.setHeader("Vary", "Origin");
+      res.setHeader("Access-Control-Allow-Headers", "Content-Type, X-Admin-Key");
+      res.setHeader("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS");
+    }
+    if (req.method === "OPTIONS" && url.pathname.startsWith("/api/")) { res.writeHead(204); return res.end(); }
     if (url.pathname.startsWith("/api/")) return await handleApi(req, res, url);
     if (url.pathname === "/favicon.ico") { res.writeHead(204); return res.end(); }
     if (!serveFile(res, url.pathname)) fail(res, 404, "找不到頁面");
