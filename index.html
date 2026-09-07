@@ -74,8 +74,11 @@
   <script src="config.js"></script>
   <script>
     /* 後台串接設定：填入 API_BASE 即切換為正式 JSON API；空白時使用本機展示模式。 */
-    const CONFIG = { API_BASE: window.QING_API_BASE || "/api", STORE_ID: "qing-linkou", AVG_MINUTES_PER_GROUP: 5 };
+    const STATIC_DEMO = location.hostname.endsWith("github.io") && !window.QING_API_BASE;
+    const CONFIG = { API_BASE: STATIC_DEMO ? "" : (window.QING_API_BASE || "/api"), STORE_ID: "qing-linkou", AVG_MINUTES_PER_GROUP: 5 };
     const DEMO_KEY = "qing-sukiyaki-active-ticket";
+    const DEMO_QUEUE_KEY = "qing-sukiyaki-demo-queue";
+    const DEMO_SETTINGS_KEY = "qing-sukiyaki-demo-settings";
     const $ = (s) => document.querySelector(s);
     const pad = n => String(n).padStart(2,"0");
     const nowText = () => new Date().toLocaleTimeString("zh-TW",{hour:"2-digit",minute:"2-digit",hour12:false});
@@ -88,14 +91,20 @@
       if(!res.ok) throw new Error((await res.json().catch(()=>({}))).message || "服務暫時無法使用");
       return res.json();
     }
+    function readDemoQueue(){
+      const queue=JSON.parse(localStorage.getItem(DEMO_QUEUE_KEY)||"[]"),saved=JSON.parse(localStorage.getItem(DEMO_KEY)||"null");
+      if(saved&&!queue.some(ticket=>ticket.id===saved.id)) queue.push(saved);
+      return queue;
+    }
+    function writeDemoQueue(queue){localStorage.setItem(DEMO_QUEUE_KEY,JSON.stringify(queue))}
     function demoApi(path, options){
       if(path==="/queue" && options.method==="POST"){
-        const input=JSON.parse(options.body), seq=18;
-        const ticket={id:"demo-"+Date.now(),storeId:CONFIG.STORE_ID,name:input.name,phone:input.phone,number:"A"+pad(seq),currentNumber:"A12",ahead:5,estimatedMinutes:25,status:"waiting",joinedAt:new Date().toISOString(),smsReminderAt:new Date(Date.now()+20*60000).toISOString()};
-        localStorage.setItem(DEMO_KEY,JSON.stringify(ticket)); return Promise.resolve(ticket);
+        const input=JSON.parse(options.body),queue=readDemoQueue(),settings=JSON.parse(localStorage.getItem(DEMO_SETTINGS_KEY)||'{"defaultWaitMinutes":25,"avgMinutesPerGroup":5,"currentNumber":"A000"}'),seq=queue.reduce((max,t)=>Math.max(max,Number(String(t.number||"").replace(/\D/g,""))||0),0)+1,ahead=queue.filter(t=>t.status==="waiting").length,estimatedMinutes=Math.max(settings.defaultWaitMinutes,(ahead+1)*settings.avgMinutesPerGroup),now=new Date();
+        const ticket={id:"demo-"+Date.now(),storeId:CONFIG.STORE_ID,name:input.name,phone:input.phone,number:"A"+String(seq).padStart(3,"0"),currentNumber:settings.currentNumber,ahead,estimatedMinutes,status:"waiting",joinedAt:now.toISOString(),estimatedEntryAt:new Date(now.getTime()+estimatedMinutes*60000).toISOString(),calledAt:null,seatedAt:null,cancelledAt:null,reminderSentAt:null,reminderProvider:null};
+        queue.push(ticket);writeDemoQueue(queue);localStorage.setItem(DEMO_KEY,JSON.stringify(ticket));return Promise.resolve(ticket);
       }
-      const saved=JSON.parse(localStorage.getItem(DEMO_KEY)||"null");
-      if(path.startsWith("/queue/") && options.method==="DELETE"){localStorage.removeItem(DEMO_KEY);return Promise.resolve({ok:true,status:"cancelled"})}
+      const queue=readDemoQueue(),id=decodeURIComponent(path.split("/").pop()),saved=queue.find(ticket=>ticket.id===id)||JSON.parse(localStorage.getItem(DEMO_KEY)||"null");
+      if(path.startsWith("/queue/") && options.method==="DELETE"){const target=queue.find(ticket=>ticket.id===id);if(target){target.status="cancelled";target.cancelledAt=new Date().toISOString();writeDemoQueue(queue)}localStorage.removeItem(DEMO_KEY);return Promise.resolve({ok:true,status:"cancelled"})}
       if(path.startsWith("/queue/") && saved) return Promise.resolve(saved);
       return Promise.reject(new Error("找不到候位資料"));
     }
@@ -122,7 +131,7 @@
     $("#refreshBtn").addEventListener("click",async()=>{try{const t=await api(`/queue/${encodeURIComponent(activeTicket.id)}`);renderTicket(t);showToast("候位進度已更新")}catch(err){showToast(err.message)}});
     $("#cancelBtn").addEventListener("click",()=>$("#cancelDialog").showModal());$("#keepBtn").addEventListener("click",()=>$("#cancelDialog").close());
     $("#confirmCancelBtn").addEventListener("click",async()=>{try{await api(`/queue/${encodeURIComponent(activeTicket.id)}`,{method:"DELETE"});$("#cancelDialog").close();resetView();showToast("候位已取消")}catch(err){showToast(err.message)}});
-    window.addEventListener("DOMContentLoaded",async()=>{if(!CONFIG.API_BASE){const saved=JSON.parse(localStorage.getItem(DEMO_KEY)||"null");if(saved?.status==="waiting")renderTicket(saved);return}const id=new URLSearchParams(location.hash.slice(1)).get("ticket");if(id){try{renderTicket(await api(`/queue/${encodeURIComponent(id)}`))}catch{history.replaceState(null,"",location.pathname)}}});
+    window.addEventListener("DOMContentLoaded",async()=>{if(!CONFIG.API_BASE){const saved=JSON.parse(localStorage.getItem(DEMO_KEY)||"null");if(saved?.status==="waiting"){try{renderTicket(await demoApi(`/queue/${encodeURIComponent(saved.id)}`,{}))}catch{}}return}const id=new URLSearchParams(location.hash.slice(1)).get("ticket");if(id){try{renderTicket(await api(`/queue/${encodeURIComponent(id)}`))}catch{history.replaceState(null,"",location.pathname)}}});
   </script>
 </body>
 </html>
