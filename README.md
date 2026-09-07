@@ -2,41 +2,17 @@
 
 此專案包含消費者取號頁、店員管理後台、JSON API、候位資料保存與入席前五分鐘簡訊排程。
 
-## 啟動
+## 正式服務
 
-需要 Node.js 20 以上版本。
+- 消費者頁：`https://machich3n.github.io/qing/`
+- 管理後台：`https://machich3n.github.io/qing/admin`
+- 共用資料：Sites Worker 與 D1 雲端資料庫
 
-```bash
-ADMIN_KEY='請換成安全密碼' npm start
-```
-
-- 消費者頁：`http://127.0.0.1:8000/`
-- 管理後台：`http://127.0.0.1:8000/admin`
-- 健康檢查：`GET /api/health`
-
-若未設定 `ADMIN_KEY`，本機預設密碼為 `qing-admin`。正式上線前務必更換。
-
-## GitHub Pages 注意事項
-
-GitHub Pages 只能發布 HTML、CSS、JavaScript 等靜態檔案，不能執行 `server.js`，因此單獨上傳 GitHub Pages 時，後台登入、JSON API、資料保存與簡訊排程都不會運作。
-
-若前台保留在 GitHub Pages，請另行部署 Node.js 後端，並修改 `config.js`：
-
-```js
-window.QING_API_BASE = "https://你的後端網址/api";
-```
-
-後端啟動時也要把 GitHub Pages 網址加入允許來源：
-
-```bash
-CORS_ORIGIN='https://你的帳號.github.io' ADMIN_KEY='安全密碼' npm start
-```
-
-`CORS_ORIGIN` 可用逗號分隔多個允許的前台網址。正式環境不建議設定為 `*`。
+前台與後台會透過 `config.js` 連到同一個雲端 API，因此不同裝置會看到相同的候位資料。
 
 ## 簡訊設定
 
-可選擇 Twilio 或自有簡訊 Webhook。將 `.env.example` 內對應值設定為系統環境變數後再啟動。
+可選擇 Twilio 或自有簡訊 Webhook，並將 `.env.example` 內對應值設定到 Sites 執行環境。
 
 Twilio 需要：
 
@@ -61,7 +37,7 @@ Webhook 會收到：
 }
 ```
 
-未設定簡訊供應商時，系統會使用測試模式，將訊息寫入 `data/sms-log.json`，方便先驗收完整流程。
+未設定簡訊供應商時，系統會使用測試模式，將提醒紀錄保存在雲端資料庫，但不會發送真實簡訊。
 
 ## JSON API
 

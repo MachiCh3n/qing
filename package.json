@@ -4,8 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "node server.js",
-    "check": "node --check server.js && node --check dist/server/index.js",
+    "check": "node --check dist/server/index.js",
     "build": "npm run check"
   },
   "engines": {
