@@ -4,7 +4,11 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
   <meta name="theme-color" content="#484848">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <title>慶壽喜燒｜線上候位</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="apple-touch-icon" href="logo/icon-192.png">
   <link rel="dns-prefetch" href="//qing-queue-api.pcc1005.workers.dev">
   <link rel="preconnect" href="https://qing-queue-api.pcc1005.workers.dev" crossorigin>
   <link rel="preload" href="config.js" as="script">
@@ -20,10 +24,11 @@
     .card{background:var(--card);border:1px solid rgba(72,72,72,.1);box-shadow:var(--shadow);padding:clamp(24px,4vw,44px)}.card h3{font-size:20px;margin:0 0 6px}.hint{color:var(--muted);font-size:13px;margin:0 0 26px}.grid{display:grid;grid-template-columns:1fr 1fr;gap:18px}.field label{display:block;font-size:12px;font-weight:700;margin-bottom:8px}.field input{width:100%;border:1px solid var(--line);background:#fbfbfc;border-radius:3px;padding:14px 15px;outline:none;transition:.2s}.field input:focus{border-color:var(--green);box-shadow:0 0 0 3px rgba(72,72,72,.1)}.field small{display:block;color:var(--muted);margin-top:7px;font-size:11px}.consent{display:flex;gap:10px;align-items:flex-start;margin:22px 0;color:var(--muted);font-size:12px}.consent input{margin-top:4px;accent-color:var(--green)}
     .primary,.secondary,.danger{width:100%;border:0;border-radius:3px;padding:15px 18px;font-weight:700}.primary{background:var(--green);color:white}.primary:hover{background:var(--green2)}.primary:disabled{opacity:.48;cursor:not-allowed}.secondary{background:var(--paper);color:var(--green)}.danger{background:#fff2f0;color:var(--danger);border:1px solid #edd0cc}.error{display:none;color:var(--danger);background:#fff3f1;padding:10px 12px;font-size:12px;margin:0 0 16px}.error.show{display:block}
     .queue-card{display:none}.queue-card.show{display:block}.queue-card.is-missed{border-color:#d89a93;box-shadow:0 20px 55px rgba(164,59,49,.16)}.queue-card.is-missed .ticket-no strong,.queue-card.is-missed .metric strong{color:var(--danger)}.queue-card.is-missed .notice{border-left-color:var(--danger);background:#fff2f0;color:#7c3029}.ticket-head{display:flex;justify-content:space-between;gap:18px;padding-bottom:24px;border-bottom:1px solid var(--line)}.ticket-no small,.now small{display:block;font-size:11px;color:var(--muted);letter-spacing:.1em}.ticket-no strong{display:block;font-family:Georgia,serif;color:var(--green);font-size:64px;line-height:1;margin-top:8px}.now{text-align:right}.now strong{display:block;font-size:24px;margin-top:10px}.metrics{display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:var(--line);margin:28px 0}.metric{background:white;padding:18px 8px;text-align:center}.metric strong{display:block;font-size:24px}.metric span{font-size:11px;color:var(--muted)}.timebar{height:7px;background:#e7e9e6;overflow:hidden;margin:14px 0 8px}.timebar i{display:block;width:65%;height:100%;background:var(--gold);transition:width .4s}.notice{border-left:3px solid var(--gold);background:#faf7ef;padding:14px 16px;margin:24px 0;font-size:12px;color:#665d4b}.actions{display:grid;grid-template-columns:1fr 1fr;gap:12px}.fineprint{font-size:11px;color:#909792;margin:18px 0 0;text-align:center}
+    .push-panel{display:flex;align-items:center;justify-content:space-between;gap:18px;border:1px solid var(--line);background:#f7f7f9;padding:14px 16px;margin:0 0 14px}.push-copy{min-width:0}.push-copy b{display:block;font-size:13px;margin-bottom:3px}.push-copy span{display:block;color:var(--muted);font-size:11px}.push-button{flex:0 0 auto;width:auto;padding:10px 13px;font-size:12px}.push-button[hidden]{display:none}.voice-button{display:none;width:100%;margin:0 0 14px;border:1px solid #c9cad0;background:#fff;color:var(--green);border-radius:3px;padding:11px 14px;font-weight:700;font-size:12px}.voice-button.show{display:block}
     .toast{position:fixed;left:50%;bottom:28px;transform:translate(-50%,20px);background:#17211d;color:#fff;padding:12px 18px;border-radius:4px;font-size:13px;opacity:0;pointer-events:none;transition:.25s;z-index:5}.toast.show{opacity:1;transform:translate(-50%,0)}
     dialog{border:0;padding:0;width:min(92vw,440px);box-shadow:var(--shadow)}dialog::backdrop{background:rgba(48,48,48,.58)}.modal{padding:30px}.modal h3{margin:0 0 8px}.modal p{color:var(--muted);font-size:13px;margin:0 0 24px}.modal-actions{display:grid;grid-template-columns:1fr 1fr;gap:10px}
     @media(max-width:820px){.shell{display:block}.brand{min-height:auto;padding:26px 22px 30px}.brand-logo{width:92px}.brand h1{font-size:38px;margin:24px 0 10px}.lead{display:none}.store{padding-top:22px}.main{padding:30px 18px 52px}.top{margin-bottom:24px}.status-pill{display:none}.card{padding:24px 20px}.ticket-no strong{font-size:54px}}
-    @media(max-width:520px){.grid,.actions{grid-template-columns:1fr}.progress{margin-bottom:22px}.step{font-size:11px}.metrics{grid-template-columns:repeat(3,1fr)}.metric strong{font-size:20px}.ticket-head{align-items:end}.now strong{font-size:19px}}
+    @media(max-width:520px){.grid,.actions{grid-template-columns:1fr}.progress{margin-bottom:22px}.step{font-size:11px}.metrics{grid-template-columns:repeat(3,1fr)}.metric strong{font-size:20px}.ticket-head{align-items:end}.now strong{font-size:19px}.push-panel{align-items:flex-start;flex-direction:column}.push-button{width:100%}}
   </style>
 </head>
 <body>
@@ -32,7 +37,7 @@
       <div>
         <div class="mark"><img class="brand-logo" src="logo/260907_qing_logo.svg" alt="慶壽喜燒 Qing Sukiyaki"></div>
         <h1>把時間，<br>留給好味道。</h1>
-        <p class="lead">線上取號後可自由安排時間。我們會在預計入席前 5 分鐘發送簡訊提醒。</p>
+        <p class="lead">線上取號後可自由安排時間。我們會在預計入席前 5 分鐘發送免費到店推播。</p>
       </div>
       <div class="store">新北市林口區南勢里文化三路一段555巷91號<br>候位服務依現場桌況彈性調整</div>
     </aside>
@@ -46,14 +51,14 @@
         <div class="progress"><div class="step active" id="s1">01 填寫資料</div><div class="step" id="s2">02 取得號碼</div><div class="step" id="s3">03 到店入席</div></div>
 
         <section class="card" id="formCard">
-          <h3>顧客資料</h3><p class="hint">每組限取一張號碼牌，請填寫可接收簡訊的手機。</p>
+          <h3>顧客資料</h3><p class="hint">每組限取一張號碼牌；取號後可開啟免費到店推播。</p>
           <div class="error" id="errorBox"></div>
           <form id="queueForm" novalidate>
             <div class="grid">
               <div class="field"><label for="name">姓名</label><input id="name" name="name" maxlength="30" autocomplete="name" placeholder="例如：王小姐" required></div>
               <div class="field"><label for="phone">手機號碼</label><input id="phone" name="phone" type="tel" inputmode="numeric" autocomplete="tel" placeholder="09xxxxxxxx" maxlength="10" required><small>僅用於候位通知及本次身份確認</small></div>
             </div>
-            <label class="consent"><input id="consent" type="checkbox" required><span>我同意慶壽喜燒於本次候位服務中使用上述資料，並接收候位簡訊通知。</span></label>
+            <label class="consent"><input id="consent" type="checkbox" required><span>我同意慶壽喜燒於本次候位服務中使用上述資料，並接收候位網頁推播通知。</span></label>
             <button class="primary" id="submitBtn" type="submit">取得候位號碼</button>
           </form>
           <p class="fineprint">送出即代表您已閱讀並同意候位須知；逾號將依現場規則安排。</p>
@@ -63,7 +68,9 @@
           <div class="ticket-head"><div class="ticket-no"><small>您的候位號碼</small><strong id="ticketNo">A018</strong></div><div class="now"><small>目前叫號</small><strong id="currentNo">A012</strong></div></div>
           <div class="metrics"><div class="metric"><strong id="ahead">5</strong><span id="aheadLabel">前方等候組數</span></div><div class="metric"><strong id="estimate">約 25 分</strong><span>預估等候時間</span></div><div class="metric"><strong id="arrival">19:20</strong><span id="arrivalLabel">建議到店時間</span></div></div>
           <div><b style="font-size:13px">候位進度</b><div class="timebar"><i id="timebar"></i></div><div style="display:flex;justify-content:space-between;font-size:11px;color:var(--muted)"><span>已取號</span><span>準備入席</span></div></div>
-          <div class="notice" id="notice">預計入席前 5 分鐘，系統將發送簡訊。收到通知後請於 10 分鐘內至櫃檯報到，或於下方取消候位。</div>
+          <div class="notice" id="notice">預計入席前 5 分鐘，系統將發送到店推播。點開通知後會語音播報完整內容，請於 10 分鐘內至櫃檯報到。</div>
+          <div class="push-panel" id="pushPanel"><div class="push-copy"><b>免費到店提醒</b><span id="pushStatus" aria-live="polite">正在檢查此裝置的通知狀態…</span></div><button class="secondary push-button" id="enablePushBtn" type="button">開啟通知</button></div>
+          <button class="voice-button" id="speakBtn" type="button">播放語音提醒</button>
           <div class="actions"><button class="secondary" id="refreshBtn">更新候位進度</button><button class="danger" id="cancelBtn">取消候位</button></div>
           <p class="fineprint" id="updatedAt">最後更新：--:--</p>
         </section>
@@ -79,6 +86,10 @@
     /* 後台串接設定：填入 API_BASE 即切換為正式 JSON API；空白時使用本機展示模式。 */
     const STATIC_DEMO = location.hostname.endsWith("github.io") && !window.QING_API_BASE;
     const CONFIG = { API_BASE: STATIC_DEMO ? "" : (window.QING_API_BASE || "/api"), STORE_ID: "qing-linkou", AVG_MINUTES_PER_GROUP: 5 };
+    const VAPID_PUBLIC_KEY = window.QING_VAPID_PUBLIC_KEY || "";
+    const PUSH_SUPPORTED = "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
+    const IS_IOS = /iphone|ipad|ipod/i.test(navigator.userAgent);
+    const IS_STANDALONE = matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
     const DEMO_KEY = "qing-sukiyaki-active-ticket";
     const DEMO_QUEUE_KEY = "qing-sukiyaki-demo-queue";
     const DEMO_SETTINGS_KEY = "qing-sukiyaki-demo-settings";
@@ -90,6 +101,8 @@
     let activeTicket = null;
     let expiryTimer = null;
     let refreshInFlight = false;
+    let serviceWorkerRegistration = null;
+    let pushSetupTicketId = null;
 
     async function api(path, options={}){
       if(!CONFIG.API_BASE) return demoApi(path, options);
@@ -98,6 +111,61 @@
       const res = await fetch(CONFIG.API_BASE.replace(/\/$/,"")+path,{...options,headers});
       if(!res.ok) throw new Error((await res.json().catch(()=>({}))).message || "服務暫時無法使用");
       return res.json();
+    }
+    function base64UrlBytes(value){
+      const padding="=".repeat((4-value.length%4)%4),base64=(value+padding).replace(/-/g,"+").replace(/_/g,"/");
+      return Uint8Array.from(atob(base64),character=>character.charCodeAt(0));
+    }
+    async function getServiceWorker(){
+      if(!PUSH_SUPPORTED)return null;
+      if(!serviceWorkerRegistration)serviceWorkerRegistration=await navigator.serviceWorker.register("./sw.js",{scope:"./",updateViaCache:"none"});
+      return navigator.serviceWorker.ready;
+    }
+    function setPushStatus(message,buttonLabel="",enabled=true){
+      $("#pushStatus").textContent=message;const button=$("#enablePushBtn");button.hidden=!buttonLabel;button.textContent=buttonLabel||"開啟通知";button.disabled=!enabled;
+    }
+    function pushUnavailableMessage(){
+      if(IS_IOS&&!IS_STANDALONE)return "iPhone 請先用 Safari「加入主畫面」，再由主畫面開啟並允許通知。";
+      return "此瀏覽器不支援系統推播；仍可在本頁查看候位進度。";
+    }
+    async function syncPushState(ticket){
+      if(!ticket)return;
+      if(!PUSH_SUPPORTED||(IS_IOS&&!IS_STANDALONE)){setPushStatus(pushUnavailableMessage());return}
+      if(Notification.permission==="denied"){setPushStatus("通知已被封鎖，請到手機或瀏覽器設定中開啟。");return}
+      if(Notification.permission!=="granted"){setPushStatus("開啟後，預計入席前 5 分鐘會收到系統通知。","開啟通知");return}
+      try{
+        const registration=await getServiceWorker(),subscription=await registration.pushManager.getSubscription();
+        if(!subscription){setPushStatus("通知權限已開啟，請完成此候位的推播設定。","完成啟用");return}
+        if(pushSetupTicketId!==ticket.id){
+          await api(`/queue/${encodeURIComponent(ticket.id)}/push-subscription`,{method:"POST",body:JSON.stringify(subscription.toJSON())});
+          pushSetupTicketId=ticket.id;
+        }
+        setPushStatus("已開啟：通知音與震動依手機設定；點開後會播報完整內容。","已開啟",false);
+      }catch(error){setPushStatus(error.message||"推播設定失敗，請稍後再試。","重試")}
+    }
+    async function enablePush(ticket,{requestPermission=true}={}){
+      if(!ticket)return;
+      if(!PUSH_SUPPORTED||(IS_IOS&&!IS_STANDALONE)){setPushStatus(pushUnavailableMessage());return}
+      try{
+        setPushStatus("正在開啟到店提醒…","處理中",false);
+        const permission=Notification.permission==="default"&&requestPermission?await Notification.requestPermission():Notification.permission;
+        if(permission!=="granted"){setPushStatus(permission==="denied"?"通知已被封鎖，請到手機或瀏覽器設定中開啟。":"尚未允許通知，可稍後再開啟。","重新開啟");return}
+        if(!VAPID_PUBLIC_KEY)throw new Error("推播服務尚未完成設定");
+        const registration=await getServiceWorker();
+        let subscription=await registration.pushManager.getSubscription();
+        if(!subscription)subscription=await registration.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:base64UrlBytes(VAPID_PUBLIC_KEY)});
+        await api(`/queue/${encodeURIComponent(ticket.id)}/push-subscription`,{method:"POST",body:JSON.stringify(subscription.toJSON())});
+        pushSetupTicketId=ticket.id;
+        setPushStatus("已開啟：通知音與震動依手機設定；點開後會播報完整內容。","已開啟",false);
+        showToast("免費到店提醒已開啟");
+      }catch(error){setPushStatus(error.message||"推播設定失敗，請稍後再試。","重試");showToast("通知未能開啟，請再試一次")}
+    }
+    function reminderSpeech(ticket,text=""){
+      return text||`慶壽喜燒提醒，您的候位號碼 ${ticket.number}，預計約 5 分鐘後可入席，請於 10 分鐘內到店，並至櫃檯報到。`;
+    }
+    function speakReminder(ticket,text=""){
+      if(!ticket||!("speechSynthesis" in window)){showToast("此裝置不支援網頁語音播報");return}
+      speechSynthesis.cancel();const utterance=new SpeechSynthesisUtterance(reminderSpeech(ticket,text));utterance.lang="zh-TW";utterance.rate=.92;utterance.pitch=1;speechSynthesis.speak(utterance);$("#speakBtn").classList.add("show");showToast("正在播報到店提醒");
     }
     function readDemoQueue(){
       const queue=JSON.parse(localStorage.getItem(DEMO_QUEUE_KEY)||"[]"),saved=JSON.parse(localStorage.getItem(DEMO_KEY)||"null");
@@ -135,27 +203,31 @@
       if(["cancelled","seated"].includes(ticket.status)){resetView();if(ticket.status==="cancelled"&&ticket.missedCount>=2)showToast("再次過號，號碼已取消，請重新取號");return false}
       activeTicket=ticket;$("#formCard").style.display="none";$("#queueCard").classList.add("show");$("#s2").classList.add("active");
       const called=ticket.status==="called",missed=ticket.status==="missed",holdUntil=called&&ticket.calledAt?new Date(new Date(ticket.calledAt).getTime()+SEAT_HOLD_MINUTES*60000):null;
-      $("#queueCard").classList.toggle("is-missed",missed);$("#s3").classList.toggle("active",called);$("#pageTitle").textContent=called?`${ticket.name}，席位保留中`:missed?`${ticket.name}，目前已過號`:`${ticket.name}，候位已完成`;$("#pageSub").textContent=called?"請在席位保留時間內至櫃檯報到。":missed?"順位已延後 3 位，號碼會保留至取消或再次過號。":"請留意叫號進度與手機簡訊。";
+      $("#queueCard").classList.toggle("is-missed",missed);$("#s3").classList.toggle("active",called);$("#pageTitle").textContent=called?`${ticket.name}，席位保留中`:missed?`${ticket.name}，目前已過號`:`${ticket.name}，候位已完成`;$("#pageSub").textContent=called?"請在席位保留時間內至櫃檯報到。":missed?"順位已延後 3 位，號碼會保留至取消或再次過號。":"請留意叫號進度與免費到店推播。";
       $("#ticketNo").textContent=ticket.number;$("#currentNo").textContent=ticket.currentNumber;$("#ahead").textContent=missed?(ticket.queuePosition||ticket.ahead+1):ticket.ahead;$("#aheadLabel").textContent=missed?"目前候位順位":"前方等候組數";$("#estimate").textContent=called?"保留中":ticket.estimatedMinutes>0?`約 ${ticket.estimatedMinutes} 分`:"即將叫號";$("#arrival").textContent=holdUntil?holdUntil.toLocaleTimeString("zh-TW",{hour:"2-digit",minute:"2-digit",hour12:false}):ticket.estimatedEntryAt?new Date(ticket.estimatedEntryAt).toLocaleTimeString("zh-TW",{hour:"2-digit",minute:"2-digit",hour12:false}):getArrival(ticket.estimatedMinutes);$("#arrivalLabel").textContent=called?"席位保留至":"建議到店時間";
-      $("#notice").textContent=called?`已為您保留席位至 ${$("#arrival").textContent}；超過 10 分鐘未報到將${ticket.missedCount>=1?"自動取消此號碼":"過號並延後 3 位"}。`:missed?"您已過號一次，順位已延後 3 位。再次叫號後若仍未於 10 分鐘內報到，系統將自動取消此號碼，屆時需重新取號。":"預計入席前 5 分鐘，系統將發送簡訊。收到通知後請於 10 分鐘內至櫃檯報到，或於下方取消候位。";
+      $("#notice").textContent=called?`已為您保留席位至 ${$("#arrival").textContent}；超過 10 分鐘未報到將${ticket.missedCount>=1?"自動取消此號碼":"過號並延後 3 位"}。`:missed?"您已過號一次，順位已延後 3 位。再次叫號後若仍未於 10 分鐘內報到，系統將自動取消此號碼，屆時需重新取號。":"預計入席前 5 分鐘，系統將發送到店推播；點開後會語音播報完整內容。系統通知音與震動仍依手機設定為準。";
       $("#timebar").style.width=called?"100%":`${Math.max(8,Math.min(95,100-ticket.ahead*12))}%`;$("#updatedAt").textContent=`最後更新：${nowText()}`;
       history.replaceState(null,"","#ticket="+encodeURIComponent(ticket.id));
-      scheduleExpiryCheck(ticket);return true;
+      $("#speakBtn").classList.add("show");syncPushState(ticket);scheduleExpiryCheck(ticket);return true;
     }
-    function resetView(){clearTimeout(expiryTimer);expiryTimer=null;activeTicket=null;localStorage.removeItem(DEMO_KEY);$("#queueCard").classList.remove("show","is-missed");$("#formCard").style.display="block";$("#s2").classList.remove("active");$("#s3").classList.remove("active");$("#pageTitle").textContent="線上候位取號";$("#pageSub").textContent="留下聯絡資料，立即取得候位號碼。";history.replaceState(null,"",location.pathname)}
+    function resetView(){clearTimeout(expiryTimer);expiryTimer=null;activeTicket=null;pushSetupTicketId=null;localStorage.removeItem(DEMO_KEY);$("#queueCard").classList.remove("show","is-missed");$("#speakBtn").classList.remove("show");$("#formCard").style.display="block";$("#s2").classList.remove("active");$("#s3").classList.remove("active");$("#pageTitle").textContent="線上候位取號";$("#pageSub").textContent="留下聯絡資料，立即取得候位號碼。";history.replaceState(null,"",location.pathname)}
     async function refreshTicket(notify=true){if(!activeTicket||refreshInFlight)return;refreshInFlight=true;try{const t=await api(`/queue/${encodeURIComponent(activeTicket.id)}`);const shown=renderTicket(t);if(notify&&shown)showToast("候位進度已更新")}catch(err){if(notify)showToast(err.message)}finally{refreshInFlight=false}}
 
     $("#queueForm").addEventListener("submit",async e=>{
       e.preventDefault();const name=$("#name").value.trim(),phone=$("#phone").value.replace(/\D/g,"");const errors=[];
-      if(name.length<2) errors.push("請輸入至少 2 個字的姓名");if(!validPhone(phone)) errors.push("請輸入正確的台灣手機號碼");if(!$("#consent").checked) errors.push("請勾選同意資料使用與簡訊通知");
+      if(name.length<2) errors.push("請輸入至少 2 個字的姓名");if(!validPhone(phone)) errors.push("請輸入正確的台灣手機號碼");if(!$("#consent").checked) errors.push("請勾選同意資料使用與網頁推播通知");
       const box=$("#errorBox");if(errors.length){box.innerHTML=errors.map(x=>`• ${escapeText(x)}`).join("<br>");box.classList.add("show");return}box.classList.remove("show");setLoading(true);
-      try{const ticket=await api("/queue",{method:"POST",body:JSON.stringify({storeId:CONFIG.STORE_ID,name,phone,notifyBySms:true})});renderTicket(ticket);showToast("取號成功，請留意候位進度")}
+      const permissionPromise=PUSH_SUPPORTED&&!(IS_IOS&&!IS_STANDALONE)&&Notification.permission==="default"?Notification.requestPermission():Promise.resolve(PUSH_SUPPORTED?Notification.permission:"unsupported");
+      try{const ticket=await api("/queue",{method:"POST",body:JSON.stringify({storeId:CONFIG.STORE_ID,name,phone,notifyByPush:true})});renderTicket(ticket);showToast("取號成功，請留意候位進度");permissionPromise.then(permission=>{if(permission==="granted")enablePush(ticket,{requestPermission:false});else syncPushState(ticket)})}
       catch(err){box.textContent=err.message;box.classList.add("show")}finally{setLoading(false)}
     });
     $("#refreshBtn").addEventListener("click",()=>refreshTicket(true));
+    $("#enablePushBtn").addEventListener("click",()=>enablePush(activeTicket));
+    $("#speakBtn").addEventListener("click",()=>speakReminder(activeTicket));
     $("#cancelBtn").addEventListener("click",()=>$("#cancelDialog").showModal());$("#keepBtn").addEventListener("click",()=>$("#cancelDialog").close());
     $("#confirmCancelBtn").addEventListener("click",async()=>{try{await api(`/queue/${encodeURIComponent(activeTicket.id)}`,{method:"DELETE"});$("#cancelDialog").close();resetView();showToast("候位已取消")}catch(err){showToast(err.message)}});
-    window.addEventListener("DOMContentLoaded",async()=>{if(!CONFIG.API_BASE){const saved=JSON.parse(localStorage.getItem(DEMO_KEY)||"null");if(saved&&["waiting","called","missed"].includes(saved.status)){try{renderTicket(await demoApi(`/queue/${encodeURIComponent(saved.id)}`,{}))}catch{}}return}const id=new URLSearchParams(location.hash.slice(1)).get("ticket");if(id){try{renderTicket(await api(`/queue/${encodeURIComponent(id)}`))}catch{history.replaceState(null,"",location.pathname)}}});
+    window.addEventListener("DOMContentLoaded",async()=>{getServiceWorker().catch(()=>{});const params=new URLSearchParams(location.hash.slice(1)),id=params.get("ticket"),shouldSpeak=params.get("speak")==="1";if(!CONFIG.API_BASE){const saved=JSON.parse(localStorage.getItem(DEMO_KEY)||"null");if(saved&&["waiting","called","missed"].includes(saved.status)){try{const ticket=await demoApi(`/queue/${encodeURIComponent(saved.id)}`,{});renderTicket(ticket);if(shouldSpeak)setTimeout(()=>speakReminder(ticket),250)}catch{}}return}if(id){try{const ticket=await api(`/queue/${encodeURIComponent(id)}`);renderTicket(ticket);if(shouldSpeak)setTimeout(()=>speakReminder(ticket),250)}catch{history.replaceState(null,"",location.pathname)}}});
+    navigator.serviceWorker?.addEventListener("message",event=>{if(event.data?.type==="SPEAK_REMINDER"&&activeTicket)speakReminder(activeTicket,event.data.text||"")});
     document.addEventListener("visibilitychange",()=>{if(!document.hidden&&activeTicket)refreshTicket(false)});
     setInterval(()=>{if(activeTicket&&!document.hidden)refreshTicket(false)},10000);
   </script>

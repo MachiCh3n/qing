@@ -49,3 +49,23 @@ export const smsLogs = sqliteTable("sms_logs", {
   providerId: text("provider_id"),
   sentAt: text("sent_at").notNull()
 }, table => [index("sms_logs_ticket_idx").on(table.ticketId, table.sentAt)]);
+
+export const pushSubscriptions = sqliteTable("push_subscriptions", {
+  ticketId: text("ticket_id").notNull(),
+  endpoint: text("endpoint").notNull(),
+  p256dh: text("p256dh").notNull(),
+  auth: text("auth").notNull(),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull()
+}, table => [
+  uniqueIndex("push_subscriptions_ticket_endpoint_unique").on(table.ticketId, table.endpoint),
+  index("push_subscriptions_ticket_idx").on(table.ticketId)
+]);
+
+export const pushLogs = sqliteTable("push_logs", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  ticketId: text("ticket_id").notNull(),
+  endpoint: text("endpoint").notNull(),
+  statusCode: integer("status_code").notNull(),
+  sentAt: text("sent_at").notNull()
+}, table => [index("push_logs_ticket_idx").on(table.ticketId, table.sentAt)]);

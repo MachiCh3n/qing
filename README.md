@@ -1,6 +1,6 @@
 # 慶壽喜燒候位系統
 
-此專案包含消費者取號頁、店員管理後台、JSON API、候位資料保存與入席前五分鐘簡訊排程。
+此專案包含消費者取號頁、店員管理後台、JSON API、候位資料保存，以及入席前五分鐘的免費 Web Push、系統通知音、震動與點開後網頁語音播報。
 
 ## 正式服務
 
@@ -12,40 +12,30 @@
 
 叫號後席位保留 10 分鐘；第一次逾時會自動標記為「已過號」並將順位延後 3 位，顧客前台會保留過號畫面。再次叫號後仍逾時，系統才會自動取消該號碼。
 
-## 簡訊設定
+## Web Push 設定
 
-可選擇 Twilio 或自有簡訊 Webhook，並將 `.env.example` 內對應值設定到 Sites 執行環境。
+五分鐘提醒使用瀏覽器標準 Web Push，不需串接每則計費的簡訊或通知供應商。Worker 需要：
 
-Twilio 需要：
+- `VAPID_PUBLIC_KEY`
+- `VAPID_PRIVATE_KEY`
+- `VAPID_SUBJECT`（例如 `mailto:service@example.com`）
+- `PUBLIC_SITE_URL`（正式候位頁網址）
 
-- `TWILIO_ACCOUNT_SID`
-- `TWILIO_AUTH_TOKEN`
-- `TWILIO_FROM`
+公鑰亦設定於 `config.js`，供瀏覽器建立訂閱。私鑰只能存在 Worker 的加密環境變數，不可提交至版本庫。
 
-自有簡訊服務需要：
+Android 與桌面瀏覽器可直接允許通知；iPhone/iPad 需先以 Safari 將網站「加入主畫面」，再從主畫面開啟並允許通知。系統通知音與震動仍受手機靜音、勿擾及通知設定控制。
 
-- `SMS_WEBHOOK_URL`
-- `SMS_WEBHOOK_TOKEN`（若供應商需要）
+叫號簡訊仍可選擇性設定 Twilio 或自有簡訊 Webhook：
 
-Webhook 會收到：
-
-```json
-{
-  "to": "0912345678",
-  "message": "慶壽喜燒提醒：您的候位號碼 A001，預計約 5 分鐘後可入席，請前往餐廳櫃台報到。",
-  "ticketId": "候位識別碼",
-  "number": "A001",
-  "event": "five-minute-reminder"
-}
-```
-
-未設定簡訊供應商時，系統會使用測試模式，將提醒紀錄保存在雲端資料庫，但不會發送真實簡訊。
+- `TWILIO_ACCOUNT_SID`、`TWILIO_AUTH_TOKEN`、`TWILIO_FROM`
+- 或 `SMS_WEBHOOK_URL`、`SMS_WEBHOOK_TOKEN`
 
 ## JSON API
 
 - `POST /api/queue`：新增候位
 - `GET /api/queue/:id`：查詢候位進度
 - `DELETE /api/queue/:id`：取消候位
+- `POST /api/queue/:id/push-subscription`：綁定此裝置的 Web Push 訂閱
 - `GET /api/admin/queue`：取得後台候位名單
 - `PATCH /api/admin/settings`：調整預設等候時間與目前叫號
 - `PATCH /api/admin/queue/:id`：調整單筆等候時間

@@ -1,0 +1,15 @@
+{
+  "name": "慶壽喜燒候位",
+  "short_name": "慶候位",
+  "description": "慶壽喜燒線上候位與到店提醒",
+  "lang": "zh-Hant-TW",
+  "start_url": "/qing/",
+  "scope": "/qing/",
+  "display": "standalone",
+  "background_color": "#b0b2be",
+  "theme_color": "#484848",
+  "icons": [
+    { "src": "logo/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "logo/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}

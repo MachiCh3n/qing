@@ -41,6 +41,17 @@ async function readBody(request) {
 function cleanPhone(value) { return String(value || "").replace(/\D/g, ""); }
 function validPhone(value) { return /^09\d{8}$/.test(value); }
 function validNumber(value) { return /^[A-Z]\d{3,4}$/.test(String(value || "").toUpperCase()); }
+function validPushEndpoint(value) {
+  try {
+    const hostname = new URL(value).hostname.toLowerCase();
+    return new URL(value).protocol === "https:" && (
+      hostname === "fcm.googleapis.com" ||
+      hostname === "web.push.apple.com" ||
+      hostname === "updates.push.services.mozilla.com" ||
+      hostname.endsWith(".notify.windows.com")
+    );
+  } catch { return false; }
+}
 function dateKey(date = new Date()) {
   return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Taipei", year: "numeric", month: "2-digit", day: "2-digit" }).format(date);
 }
@@ -111,6 +122,139 @@ async function isAdmin(request, env) {
   return crypto.subtle.timingSafeEqual(expectedHash, actualHash);
 }
 
+const textEncoder = new TextEncoder();
+
+function fromBase64Url(value) {
+  const normalized = String(value || "").replace(/-/g, "+").replace(/_/g, "/");
+  const padded = normalized + "=".repeat((4 - normalized.length % 4) % 4);
+  return Uint8Array.from(atob(padded), character => character.charCodeAt(0));
+}
+
+function toBase64Url(value) {
+  const bytes = value instanceof Uint8Array ? value : new Uint8Array(value);
+  let binary = "";
+  for (let index = 0; index < bytes.length; index += 8192) binary += String.fromCharCode(...bytes.subarray(index, index + 8192));
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+function joinBytes(...parts) {
+  const bytes = parts.map(part => part instanceof Uint8Array ? part : new Uint8Array(part));
+  const joined = new Uint8Array(bytes.reduce((length, part) => length + part.length, 0));
+  let offset = 0;
+  for (const part of bytes) { joined.set(part, offset); offset += part.length; }
+  return joined;
+}
+
+async function hmacSha256(keyBytes, data) {
+  const key = await crypto.subtle.importKey("raw", keyBytes, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  return new Uint8Array(await crypto.subtle.sign("HMAC", key, data));
+}
+
+async function hkdf(salt, inputKeyMaterial, info, length) {
+  const pseudoRandomKey = await hmacSha256(salt, inputKeyMaterial);
+  const output = await hmacSha256(pseudoRandomKey, joinBytes(info, new Uint8Array([1])));
+  return output.slice(0, length);
+}
+
+async function encryptPushPayload(subscription, payload) {
+  const clientPublicKey = fromBase64Url(subscription.p256dh);
+  const authSecret = fromBase64Url(subscription.auth);
+  if (clientPublicKey.length !== 65 || authSecret.length !== 16) throw new Error("推播訂閱金鑰格式錯誤");
+
+  const serverKeys = await crypto.subtle.generateKey({ name: "ECDH", namedCurve: "P-256" }, true, ["deriveBits"]);
+  const clientKey = await crypto.subtle.importKey("raw", clientPublicKey, { name: "ECDH", namedCurve: "P-256" }, false, []);
+  const sharedSecret = new Uint8Array(await crypto.subtle.deriveBits({ name: "ECDH", public: clientKey }, serverKeys.privateKey, 256));
+  const serverPublicKey = new Uint8Array(await crypto.subtle.exportKey("raw", serverKeys.publicKey));
+  const inputKeyMaterial = await hkdf(authSecret, sharedSecret, joinBytes(textEncoder.encode("WebPush: info\0"), clientPublicKey, serverPublicKey), 32);
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const contentEncryptionKey = await hkdf(salt, inputKeyMaterial, textEncoder.encode("Content-Encoding: aes128gcm\0"), 16);
+  const nonce = await hkdf(salt, inputKeyMaterial, textEncoder.encode("Content-Encoding: nonce\0"), 12);
+  const aesKey = await crypto.subtle.importKey("raw", contentEncryptionKey, "AES-GCM", false, ["encrypt"]);
+  const plaintext = joinBytes(textEncoder.encode(JSON.stringify(payload)), new Uint8Array([2]));
+  const ciphertext = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-GCM", iv: nonce, tagLength: 128 }, aesKey, plaintext));
+  const recordSize = new Uint8Array(4);
+  new DataView(recordSize.buffer).setUint32(0, 4096);
+  return joinBytes(salt, recordSize, new Uint8Array([serverPublicKey.length]), serverPublicKey, ciphertext);
+}
+
+async function createVapidToken(endpoint, env) {
+  const publicKey = fromBase64Url(env.VAPID_PUBLIC_KEY);
+  const privateKey = String(env.VAPID_PRIVATE_KEY || "");
+  if (publicKey.length !== 65 || privateKey.length < 40) throw new Error("Web Push 尚未完成金鑰設定");
+  const key = await crypto.subtle.importKey("jwk", {
+    kty: "EC", crv: "P-256", x: toBase64Url(publicKey.slice(1, 33)), y: toBase64Url(publicKey.slice(33)), d: privateKey, ext: true
+  }, { name: "ECDSA", namedCurve: "P-256" }, false, ["sign"]);
+  const header = toBase64Url(textEncoder.encode(JSON.stringify({ typ: "JWT", alg: "ES256" })));
+  const claims = toBase64Url(textEncoder.encode(JSON.stringify({
+    aud: new URL(endpoint).origin,
+    exp: Math.floor(Date.now() / 1000) + 43_200,
+    sub: String(env.VAPID_SUBJECT || "mailto:pcc1005@gmail.com")
+  })));
+  const unsignedToken = `${header}.${claims}`;
+  const signature = await crypto.subtle.sign({ name: "ECDSA", hash: "SHA-256" }, key, textEncoder.encode(unsignedToken));
+  return `${unsignedToken}.${toBase64Url(signature)}`;
+}
+
+async function sendWebPush(env, subscription, payload) {
+  const endpoint = new URL(subscription.endpoint);
+  if (endpoint.protocol !== "https:") throw new Error("推播服務網址不安全");
+  const [body, token] = await Promise.all([encryptPushPayload(subscription, payload), createVapidToken(endpoint, env)]);
+  return fetch(endpoint, {
+    method: "POST",
+    headers: {
+      Authorization: `vapid t=${token}, k=${env.VAPID_PUBLIC_KEY}`,
+      "Content-Encoding": "aes128gcm",
+      "Content-Type": "application/octet-stream",
+      TTL: "600",
+      Urgency: "high"
+    },
+    body
+  });
+}
+
+function pushReminderPayload(ticket, env) {
+  const siteUrl = String(env.PUBLIC_SITE_URL || "https://machich3n.github.io/qing/").replace(/\/?$/, "/");
+  const body = `${ticket.number} 號預計約 ${REMINDER_MINUTES} 分鐘後入席，請於 ${SEAT_HOLD_MINUTES} 分鐘內到店。`;
+  return {
+    title: `${STORE_NAME}｜即將入席`,
+    body,
+    icon: `${siteUrl}logo/icon-192.png`,
+    badge: `${siteUrl}logo/badge-96.png`,
+    tag: `queue-${ticket.number}`,
+    ticketId: ticket.id,
+    url: `${siteUrl}#ticket=${encodeURIComponent(ticket.id)}&speak=1`,
+    speakText: `${STORE_NAME}提醒，您的候位號碼 ${ticket.number}，預計約 ${REMINDER_MINUTES} 分鐘後可入席，請於 ${SEAT_HOLD_MINUTES} 分鐘內到店，並至櫃檯報到。`
+  };
+}
+
+async function sendTicketPushes(env, ticket) {
+  const result = await env.DB.prepare("SELECT endpoint, p256dh, auth FROM push_subscriptions WHERE ticket_id = ?").bind(ticket.id).all();
+  const subscriptions = result.results || [];
+  if (!subscriptions.length) return { sent: 0, unavailable: true };
+  const payload = pushReminderPayload(ticket, env);
+  let sent = 0;
+  let lastError = null;
+  for (const subscription of subscriptions) {
+    const sentAt = new Date().toISOString();
+    try {
+      const response = await sendWebPush(env, subscription, payload);
+      await env.DB.prepare("INSERT INTO push_logs (ticket_id, endpoint, status_code, sent_at) VALUES (?, ?, ?, ?)").bind(ticket.id, subscription.endpoint, response.status, sentAt).run();
+      if (response.status === 404 || response.status === 410) {
+        await env.DB.prepare("DELETE FROM push_subscriptions WHERE ticket_id = ? AND endpoint = ?").bind(ticket.id, subscription.endpoint).run();
+      } else if (!response.ok) {
+        lastError = new Error(`推播服務回應 ${response.status}`);
+      } else {
+        sent += 1;
+      }
+    } catch (error) {
+      lastError = error;
+      await env.DB.prepare("INSERT INTO push_logs (ticket_id, endpoint, status_code, sent_at) VALUES (?, ?, 0, ?)").bind(ticket.id, subscription.endpoint, sentAt).run();
+    }
+  }
+  if (!sent && lastError) throw lastError;
+  return { sent, unavailable: false };
+}
+
 async function sendSms(env, ticket, message, event) {
   if (env.TWILIO_ACCOUNT_SID && env.TWILIO_AUTH_TOKEN && env.TWILIO_FROM) {
     const to = ticket.phone.startsWith("09") ? `+886${ticket.phone.slice(1)}` : ticket.phone;
@@ -137,15 +281,15 @@ function reminderMessage(ticket) {
 
 async function deliverReminder(env, ticket, event = "five-minute-reminder") {
   const message = reminderMessage(ticket);
-  const delivery = await sendSms(env, ticket, message, event);
+  const delivery = await sendTicketPushes(env, ticket);
   const now = new Date().toISOString();
   await env.DB.batch([
     env.DB.prepare("INSERT INTO sms_logs (ticket_id, event, recipient, message, provider, provider_id, sent_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
-      .bind(ticket.id, event, ticket.phone, message, delivery.provider, delivery.providerId, now),
+      .bind(ticket.id, event, ticket.phone, message, delivery.unavailable ? "not-subscribed" : "web-push", delivery.sent ? String(delivery.sent) : null, now),
     env.DB.prepare("UPDATE tickets SET reminder_sent_at = ?, reminder_provider = ?, reminder_provider_id = ?, reminder_error = NULL, updated_at = ? WHERE id = ?")
-      .bind(now, delivery.provider, delivery.providerId, now, ticket.id)
+      .bind(now, delivery.unavailable ? "not-subscribed" : "web-push", delivery.sent ? String(delivery.sent) : null, now, ticket.id)
   ]);
-  return { ...ticket, reminderSentAt: now, reminderProvider: delivery.provider, reminderProviderId: delivery.providerId, reminderError: null, updatedAt: now };
+  return { ...ticket, reminderSentAt: now, reminderProvider: delivery.unavailable ? "not-subscribed" : "web-push", reminderProviderId: delivery.sent ? String(delivery.sent) : null, reminderError: null, updatedAt: now };
 }
 
 async function processDueReminders(env) {
@@ -203,7 +347,7 @@ async function processQueueAutomation(env) {
 async function handleApi(request, env, url, ctx) {
   const { pathname, searchParams } = url;
   const method = request.method;
-  if (method === "GET" && pathname === "/api/health") return json(request, env, { ok: true, storage: "d1", reminderMinutes: REMINDER_MINUTES, seatHoldMinutes: SEAT_HOLD_MINUTES });
+  if (method === "GET" && pathname === "/api/health") return json(request, env, { ok: true, storage: "d1", reminderMinutes: REMINDER_MINUTES, seatHoldMinutes: SEAT_HOLD_MINUTES, webPush: Boolean(env.VAPID_PUBLIC_KEY && env.VAPID_PRIVATE_KEY) });
 
   if (method === "POST" && pathname === "/api/queue") {
     const body = await readBody(request);
@@ -245,6 +389,26 @@ async function handleApi(request, env, url, ctx) {
     return json(request, env, toPublicTicket(ticket, ticket.currentNumber, ticket.ahead), 201);
   }
 
+  const pushSubscriptionMatch = pathname.match(/^\/api\/queue\/([0-9a-f-]+)\/push-subscription$/i);
+  if (pushSubscriptionMatch && method === "POST") {
+    const body = await readBody(request);
+    const endpoint = String(body.endpoint || "");
+    const p256dh = String(body.keys?.p256dh || "");
+    const auth = String(body.keys?.auth || "");
+    let keysValid = false;
+    try { keysValid = fromBase64Url(p256dh).length === 65 && fromBase64Url(auth).length === 16; } catch {}
+    if (!validPushEndpoint(endpoint) || !keysValid) return fail(request, env, 400, "網頁推播訂閱格式錯誤");
+    const now = new Date().toISOString();
+    const result = await env.DB.prepare(`
+      INSERT INTO push_subscriptions (ticket_id, endpoint, p256dh, auth, created_at, updated_at)
+      SELECT id, ?, ?, ?, ?, ? FROM tickets
+      WHERE id = ? AND status IN ('waiting', 'called', 'missed')
+      ON CONFLICT(ticket_id, endpoint) DO UPDATE SET p256dh = excluded.p256dh, auth = excluded.auth, updated_at = excluded.updated_at
+      RETURNING ticket_id
+    `).bind(endpoint, p256dh, auth, now, now, pushSubscriptionMatch[1]).run();
+    return result.results?.[0] ? json(request, env, { ok: true }) : fail(request, env, 404, "找不到可訂閱的候位資料");
+  }
+
   const publicMatch = pathname.match(/^\/api\/queue\/([0-9a-f-]+)$/i);
   if (publicMatch && method === "GET") {
     ctx.waitUntil(processQueueAutomation(env));
@@ -253,7 +417,10 @@ async function handleApi(request, env, url, ctx) {
   }
   if (publicMatch && method === "DELETE") {
     const now = new Date().toISOString();
-    const result = await env.DB.prepare("UPDATE tickets SET status = 'cancelled', cancelled_at = ?, updated_at = ? WHERE id = ? AND status IN ('waiting', 'called', 'missed')").bind(now, now, publicMatch[1]).run();
+    const [result] = await env.DB.batch([
+      env.DB.prepare("UPDATE tickets SET status = 'cancelled', cancelled_at = ?, updated_at = ? WHERE id = ? AND status IN ('waiting', 'called', 'missed')").bind(now, now, publicMatch[1]),
+      env.DB.prepare("DELETE FROM push_subscriptions WHERE ticket_id = ?").bind(publicMatch[1])
+    ]);
     return result.meta.changes ? json(request, env, { ok: true, status: "cancelled" }) : fail(request, env, 404, "找不到候位資料");
   }
 
