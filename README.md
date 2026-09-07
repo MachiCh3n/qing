@@ -6,11 +6,11 @@
 
 - 消費者頁：`https://machich3n.github.io/qing/`
 - 管理後台：`https://machich3n.github.io/qing/admin`
-- 共用資料：Sites Worker 與 D1 雲端資料庫
+- 共用資料：Cloudflare Worker 與 D1 雲端資料庫
 
 前台與後台會透過 `config.js` 連到同一個雲端 API，因此不同裝置會看到相同的候位資料。
 
-叫號後席位保留 10 分鐘；逾時會自動標記為「已過號」，顧客前台也會回到取號首頁。
+叫號後席位保留 10 分鐘；第一次逾時會自動標記為「已過號」並將順位延後 3 位，顧客前台會保留過號畫面。再次叫號後仍逾時，系統才會自動取消該號碼。
 
 ## 簡訊設定
 
@@ -52,5 +52,6 @@ Webhook 會收到：
 - `POST /api/admin/queue/:id/remind`：立即發送提醒
 - `POST /api/admin/queue/:id/call`：叫號並發送入席通知
 - `POST /api/admin/queue/:id/complete`：標記已入席
+- `POST /api/admin/queue/:id/cancel`：由後台取消等候中、保留中或已過號的號碼
 
 所有 `/api/admin/*` 請求都必須帶上 `X-Admin-Key` 標頭。

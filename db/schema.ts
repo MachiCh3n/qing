@@ -8,6 +8,8 @@ export const tickets = sqliteTable("tickets", {
   name: text("name").notNull(),
   phone: text("phone").notNull(),
   status: text("status").notNull().default("waiting"),
+  queueOrder: integer("queue_order").notNull().default(0),
+  missedCount: integer("missed_count").notNull().default(0),
   currentNumber: text("current_number").notNull().default("A000"),
   ahead: integer("ahead").notNull().default(0),
   estimatedMinutes: integer("estimated_minutes").notNull().default(25),
@@ -15,6 +17,7 @@ export const tickets = sqliteTable("tickets", {
   joinedAt: text("joined_at").notNull(),
   updatedAt: text("updated_at").notNull(),
   calledAt: text("called_at"),
+  missedAt: text("missed_at"),
   seatedAt: text("seated_at"),
   cancelledAt: text("cancelled_at"),
   reminderSentAt: text("reminder_sent_at"),
@@ -26,7 +29,8 @@ export const tickets = sqliteTable("tickets", {
   callMessageError: text("call_message_error")
 }, table => [
   uniqueIndex("tickets_date_number_unique").on(table.dateKey, table.number),
-  index("tickets_status_joined_idx").on(table.status, table.joinedAt)
+  index("tickets_status_joined_idx").on(table.status, table.joinedAt),
+  index("tickets_active_order_idx").on(table.status, table.queueOrder)
 ]);
 
 export const settings = sqliteTable("settings", {

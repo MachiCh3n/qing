@@ -68,9 +68,10 @@ async function saveSettings(env, settings) {
 function rowToTicket(row) {
   return {
     id: row.id, dateKey: row.date_key, number: row.number, storeId: row.store_id, name: row.name, phone: row.phone,
-    status: row.status, currentNumber: row.current_number, ahead: row.ahead, estimatedMinutes: row.estimated_minutes,
+    status: row.status, queueOrder: Number(row.queue_order || 0), missedCount: Number(row.missed_count || 0),
+    currentNumber: row.current_number, ahead: row.ahead, estimatedMinutes: row.estimated_minutes,
     estimatedEntryAt: row.estimated_entry_at, joinedAt: row.joined_at, updatedAt: row.updated_at, calledAt: row.called_at,
-    seatedAt: row.seated_at, cancelledAt: row.cancelled_at, reminderSentAt: row.reminder_sent_at,
+    missedAt: row.missed_at, seatedAt: row.seated_at, cancelledAt: row.cancelled_at, reminderSentAt: row.reminder_sent_at,
     reminderProvider: row.reminder_provider, reminderProviderId: row.reminder_provider_id, reminderError: row.reminder_error,
     callMessageSentAt: row.call_message_sent_at, callMessageProvider: row.call_message_provider, callMessageError: row.call_message_error
   };
@@ -83,9 +84,11 @@ async function getTicket(env, id) {
 
 async function publicTicket(env, ticket) {
   const settings = await getSettings(env);
-  const aheadRow = ticket.status === "waiting" ? await env.DB.prepare("SELECT COUNT(*) AS count FROM tickets WHERE status = 'waiting' AND joined_at < ?").bind(ticket.joinedAt).first() : { count: 0 };
+  const queued = ticket.status === "waiting" || ticket.status === "missed";
+  const aheadRow = queued ? await env.DB.prepare("SELECT COUNT(*) AS count FROM tickets WHERE status IN ('waiting', 'missed') AND queue_order < ?").bind(ticket.queueOrder).first() : { count: 0 };
   const { phone, reminderError, ...safe } = ticket;
-  return { ...safe, ahead: Number(aheadRow?.count || 0), currentNumber: settings.currentNumber };
+  const ahead = Number(aheadRow?.count || 0);
+  return { ...safe, ahead, queuePosition: queued ? ahead + 1 : null, currentNumber: settings.currentNumber };
 }
 
 async function isAdmin(request, env) {
@@ -152,11 +155,36 @@ async function processDueReminders(env) {
   }
 }
 
+async function postponeMissedTicket(env, ticket, now) {
+  const result = await env.DB.prepare("SELECT id, queue_order, joined_at FROM tickets WHERE status IN ('waiting', 'missed') AND id != ? ORDER BY queue_order, joined_at").bind(ticket.id).all();
+  const queue = result.results || [];
+  let formerIndex = queue.findIndex(row => Number(row.queue_order) > ticket.queueOrder || (Number(row.queue_order) === ticket.queueOrder && row.joined_at > ticket.joinedAt));
+  if (formerIndex < 0) formerIndex = queue.length;
+  const newIndex = Math.min(formerIndex + 3, queue.length);
+  const targetOrder = newIndex > formerIndex ? Number(queue[newIndex - 1].queue_order) : ticket.queueOrder;
+  const settings = await getSettings(env);
+  const estimatedMinutes = Math.max(settings.avgMinutesPerGroup, (newIndex + 1) * settings.avgMinutesPerGroup);
+  const estimatedEntryAt = new Date(new Date(now).getTime() + estimatedMinutes * 60_000).toISOString();
+  const statements = [];
+  if (targetOrder > ticket.queueOrder) {
+    statements.push(env.DB.prepare("UPDATE tickets SET queue_order = queue_order - 1 WHERE status IN ('waiting', 'missed') AND queue_order > ? AND queue_order <= ?").bind(ticket.queueOrder, targetOrder));
+  }
+  statements.push(env.DB.prepare("UPDATE tickets SET status = 'missed', queue_order = ?, missed_count = 1, missed_at = ?, estimated_minutes = ?, estimated_entry_at = ?, updated_at = ? WHERE id = ? AND status = 'called'").bind(targetOrder, now, estimatedMinutes, estimatedEntryAt, now, ticket.id));
+  await env.DB.batch(statements);
+}
+
 async function processExpiredCalls(env, now = new Date()) {
   const checkedAt = now.toISOString();
   const cutoff = new Date(now.getTime() - SEAT_HOLD_MINUTES * 60_000).toISOString();
-  await env.DB.prepare("UPDATE tickets SET status = 'missed', updated_at = ? WHERE status = 'called' AND called_at IS NOT NULL AND called_at <= ?")
-    .bind(checkedAt, cutoff).run();
+  const expired = await env.DB.prepare("SELECT * FROM tickets WHERE status = 'called' AND called_at IS NOT NULL AND called_at <= ? ORDER BY called_at").bind(cutoff).all();
+  for (const row of expired.results || []) {
+    const ticket = rowToTicket(row);
+    if (ticket.missedCount >= 1) {
+      await env.DB.prepare("UPDATE tickets SET status = 'cancelled', missed_count = missed_count + 1, cancelled_at = ?, updated_at = ? WHERE id = ? AND status = 'called'").bind(checkedAt, checkedAt, ticket.id).run();
+    } else {
+      await postponeMissedTicket(env, ticket, checkedAt);
+    }
+  }
 }
 
 async function processQueueAutomation(env) {
@@ -176,7 +204,8 @@ async function handleApi(request, env, url) {
     if (name.length < 2 || name.length > 30) return fail(request, env, 400, "姓名需為 2 至 30 個字");
     if (!validPhone(phone)) return fail(request, env, 400, "請輸入正確的台灣手機號碼");
     const settings = await getSettings(env);
-    const waiting = await env.DB.prepare("SELECT COUNT(*) AS count FROM tickets WHERE status = 'waiting'").first();
+    const waiting = await env.DB.prepare("SELECT COUNT(*) AS count FROM tickets WHERE status IN ('waiting', 'missed')").first();
+    const lastOrder = await env.DB.prepare("SELECT MAX(queue_order) AS value FROM tickets").first();
     const last = await env.DB.prepare("SELECT MAX(CAST(SUBSTR(number, 2) AS INTEGER)) AS seq FROM tickets WHERE date_key = ?").bind(dateKey()).first();
     const seq = Number(last?.seq || 0) + 1;
     const ahead = Number(waiting?.count || 0);
@@ -184,13 +213,14 @@ async function handleApi(request, env, url) {
     const now = new Date();
     const ticket = {
       id: crypto.randomUUID(), dateKey: dateKey(now), number: `A${String(seq).padStart(3, "0")}`, storeId: body.storeId || settings.storeId,
-      name, phone, status: "waiting", currentNumber: settings.currentNumber, ahead, estimatedMinutes,
+      name, phone, status: "waiting", queueOrder: Number(lastOrder?.value || 0) + 1000, missedCount: 0,
+      currentNumber: settings.currentNumber, ahead, estimatedMinutes,
       estimatedEntryAt: new Date(now.getTime() + estimatedMinutes * 60_000).toISOString(), joinedAt: now.toISOString(), updatedAt: now.toISOString(),
-      calledAt: null, seatedAt: null, cancelledAt: null, reminderSentAt: null, reminderProvider: null, reminderProviderId: null,
+      calledAt: null, missedAt: null, seatedAt: null, cancelledAt: null, reminderSentAt: null, reminderProvider: null, reminderProviderId: null,
       reminderError: null, callMessageSentAt: null, callMessageProvider: null, callMessageError: null
     };
-    await env.DB.prepare("INSERT INTO tickets (id, date_key, number, store_id, name, phone, status, current_number, ahead, estimated_minutes, estimated_entry_at, joined_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-      .bind(ticket.id, ticket.dateKey, ticket.number, ticket.storeId, ticket.name, ticket.phone, ticket.status, ticket.currentNumber, ticket.ahead, ticket.estimatedMinutes, ticket.estimatedEntryAt, ticket.joinedAt, ticket.updatedAt).run();
+    await env.DB.prepare("INSERT INTO tickets (id, date_key, number, store_id, name, phone, status, queue_order, missed_count, current_number, ahead, estimated_minutes, estimated_entry_at, joined_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+      .bind(ticket.id, ticket.dateKey, ticket.number, ticket.storeId, ticket.name, ticket.phone, ticket.status, ticket.queueOrder, ticket.missedCount, ticket.currentNumber, ticket.ahead, ticket.estimatedMinutes, ticket.estimatedEntryAt, ticket.joinedAt, ticket.updatedAt).run();
     return json(request, env, await publicTicket(env, ticket), 201);
   }
 
@@ -202,7 +232,7 @@ async function handleApi(request, env, url) {
   }
   if (publicMatch && method === "DELETE") {
     const now = new Date().toISOString();
-    const result = await env.DB.prepare("UPDATE tickets SET status = 'cancelled', cancelled_at = ?, updated_at = ? WHERE id = ?").bind(now, now, publicMatch[1]).run();
+    const result = await env.DB.prepare("UPDATE tickets SET status = 'cancelled', cancelled_at = ?, updated_at = ? WHERE id = ? AND status IN ('waiting', 'called', 'missed')").bind(now, now, publicMatch[1]).run();
     return result.meta.changes ? json(request, env, { ok: true, status: "cancelled" }) : fail(request, env, 404, "找不到候位資料");
   }
 
@@ -211,13 +241,15 @@ async function handleApi(request, env, url) {
     await processQueueAutomation(env);
     const filter = searchParams.get("status") || "active";
     let query = "SELECT * FROM tickets ORDER BY joined_at";
-    if (filter === "active") query = "SELECT * FROM tickets WHERE status IN ('waiting', 'called') ORDER BY joined_at";
-    else if (filter !== "all") query = "SELECT * FROM tickets WHERE status = ? ORDER BY joined_at";
+    if (filter === "active") query = "SELECT * FROM tickets WHERE status IN ('waiting', 'called', 'missed') ORDER BY CASE WHEN status = 'called' THEN 0 ELSE 1 END, queue_order, joined_at";
+    else if (filter !== "all") query = "SELECT * FROM tickets WHERE status = ? ORDER BY queue_order, joined_at";
     const result = filter !== "all" && filter !== "active" ? await env.DB.prepare(query).bind(filter).all() : await env.DB.prepare(query).all();
+    const activeOrder = await env.DB.prepare("SELECT id FROM tickets WHERE status IN ('waiting', 'missed') ORDER BY queue_order, joined_at").all();
+    const positions = new Map((activeOrder.results || []).map((row, index) => [row.id, index + 1]));
     const counts = await env.DB.prepare("SELECT status, COUNT(*) AS count FROM tickets GROUP BY status").all();
     const today = await env.DB.prepare("SELECT COUNT(*) AS count FROM tickets WHERE date_key = ?").bind(dateKey()).first();
     const byStatus = Object.fromEntries((counts.results || []).map(row => [row.status, Number(row.count)]));
-    return json(request, env, { tickets: (result.results || []).map(rowToTicket), stats: { waiting: byStatus.waiting || 0, called: byStatus.called || 0, seated: byStatus.seated || 0, todayTotal: Number(today?.count || 0) }, settings: await getSettings(env), checkedAt: new Date().toISOString() });
+    return json(request, env, { tickets: (result.results || []).map(row => { const ticket = rowToTicket(row); return { ...ticket, queuePosition: positions.get(ticket.id) || null }; }), stats: { waiting: byStatus.waiting || 0, called: byStatus.called || 0, missed: byStatus.missed || 0, seated: byStatus.seated || 0, todayTotal: Number(today?.count || 0) }, settings: await getSettings(env), checkedAt: new Date().toISOString() });
   }
   if (method === "GET" && pathname === "/api/admin/settings") return json(request, env, await getSettings(env));
   if (method === "PATCH" && pathname === "/api/admin/settings") {
@@ -233,7 +265,7 @@ async function handleApi(request, env, url) {
     return json(request, env, await saveSettings(env, settings));
   }
 
-  const adminMatch = pathname.match(/^\/api\/admin\/queue\/([0-9a-f-]+)(?:\/(remind|call|complete))?$/i);
+  const adminMatch = pathname.match(/^\/api\/admin\/queue\/([0-9a-f-]+)(?:\/(remind|call|complete|cancel))?$/i);
   if (adminMatch && method === "PATCH" && !adminMatch[2]) {
     const body = await readBody(request);
     const ticket = await getTicket(env, adminMatch[1]);
@@ -255,6 +287,7 @@ async function handleApi(request, env, url) {
   if (adminMatch && method === "POST" && adminMatch[2] === "call") {
     let ticket = await getTicket(env, adminMatch[1]);
     if (!ticket) return fail(request, env, 404, "找不到候位資料");
+    if (!['waiting', 'missed'].includes(ticket.status)) return fail(request, env, 409, "此號碼目前無法叫號");
     const now = new Date().toISOString();
     await env.DB.prepare("UPDATE tickets SET status = 'called', called_at = ?, estimated_minutes = 0, estimated_entry_at = ?, current_number = number, updated_at = ? WHERE id = ?").bind(now, now, now, ticket.id).run();
     const settings = await getSettings(env); settings.currentNumber = ticket.number; await saveSettings(env, settings); ticket = await getTicket(env, ticket.id);
@@ -269,8 +302,13 @@ async function handleApi(request, env, url) {
   }
   if (adminMatch && method === "POST" && adminMatch[2] === "complete") {
     const now = new Date().toISOString();
-    const result = await env.DB.prepare("UPDATE tickets SET status = 'seated', seated_at = ?, updated_at = ? WHERE id = ?").bind(now, now, adminMatch[1]).run();
+    const result = await env.DB.prepare("UPDATE tickets SET status = 'seated', seated_at = ?, updated_at = ? WHERE id = ? AND status = 'called'").bind(now, now, adminMatch[1]).run();
     return result.meta.changes ? json(request, env, await getTicket(env, adminMatch[1])) : fail(request, env, 404, "找不到候位資料");
+  }
+  if (adminMatch && method === "POST" && adminMatch[2] === "cancel") {
+    const now = new Date().toISOString();
+    const result = await env.DB.prepare("UPDATE tickets SET status = 'cancelled', cancelled_at = ?, updated_at = ? WHERE id = ? AND status IN ('waiting', 'called', 'missed')").bind(now, now, adminMatch[1]).run();
+    return result.meta.changes ? json(request, env, await getTicket(env, adminMatch[1])) : fail(request, env, 409, "此號碼目前無法取消");
   }
   return fail(request, env, 404, "找不到 API 路徑");
 }
