@@ -22,6 +22,7 @@ function corsHeaders(request, env) {
     headers.Vary = "Origin";
     headers["Access-Control-Allow-Headers"] = "Content-Type, X-Admin-Key";
     headers["Access-Control-Allow-Methods"] = "GET, POST, PATCH, DELETE, OPTIONS";
+    headers["Access-Control-Max-Age"] = "86400";
   }
   return headers;
 }
@@ -44,9 +45,8 @@ function dateKey(date = new Date()) {
   return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Taipei", year: "numeric", month: "2-digit", day: "2-digit" }).format(date);
 }
 
-async function getSettings(env) {
-  const result = await env.DB.prepare("SELECT key, value FROM settings").all();
-  const stored = Object.fromEntries((result.results || []).map(row => [row.key, row.value]));
+function settingsFromRows(rows = []) {
+  const stored = Object.fromEntries(rows.map(row => [row.key, row.value]));
   return {
     ...DEFAULT_SETTINGS,
     defaultWaitMinutes: Number(stored.defaultWaitMinutes ?? DEFAULT_SETTINGS.defaultWaitMinutes),
@@ -55,14 +55,9 @@ async function getSettings(env) {
   };
 }
 
-async function saveSettings(env, settings) {
-  const now = new Date().toISOString();
-  await env.DB.batch([
-    env.DB.prepare("INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at").bind("defaultWaitMinutes", String(settings.defaultWaitMinutes), now),
-    env.DB.prepare("INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at").bind("avgMinutesPerGroup", String(settings.avgMinutesPerGroup), now),
-    env.DB.prepare("INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at").bind("currentNumber", settings.currentNumber, now)
-  ]);
-  return settings;
+async function getSettings(env) {
+  const result = await env.DB.prepare("SELECT key, value FROM settings").all();
+  return settingsFromRows(result.results || []);
 }
 
 function rowToTicket(row) {
@@ -82,13 +77,26 @@ async function getTicket(env, id) {
   return row ? rowToTicket(row) : null;
 }
 
-async function publicTicket(env, ticket) {
-  const settings = await getSettings(env);
+function toPublicTicket(ticket, currentNumber, aheadValue) {
   const queued = ticket.status === "waiting" || ticket.status === "missed";
-  const aheadRow = queued ? await env.DB.prepare("SELECT COUNT(*) AS count FROM tickets WHERE status IN ('waiting', 'missed') AND queue_order < ?").bind(ticket.queueOrder).first() : { count: 0 };
   const { phone, reminderError, ...safe } = ticket;
-  const ahead = Number(aheadRow?.count || 0);
-  return { ...safe, ahead, queuePosition: queued ? ahead + 1 : null, currentNumber: settings.currentNumber };
+  const ahead = queued ? Number(aheadValue || 0) : 0;
+  return { ...safe, ahead, queuePosition: queued ? ahead + 1 : null, currentNumber };
+}
+
+async function getPublicTicket(env, id) {
+  const row = await env.DB.prepare(`
+    SELECT t.*,
+      COALESCE((SELECT value FROM settings WHERE key = 'currentNumber'), ?) AS live_current_number,
+      CASE WHEN t.status IN ('waiting', 'missed') THEN (
+        SELECT COUNT(*) FROM tickets q
+        WHERE q.status IN ('waiting', 'missed')
+          AND (q.queue_order < t.queue_order OR (q.queue_order = t.queue_order AND q.joined_at < t.joined_at))
+      ) ELSE 0 END AS live_ahead
+    FROM tickets t WHERE t.id = ?
+  `).bind(DEFAULT_SETTINGS.currentNumber, id).first();
+  if (!row) return null;
+  return toPublicTicket(rowToTicket(row), row.live_current_number, row.live_ahead);
 }
 
 async function isAdmin(request, env) {
@@ -103,11 +111,6 @@ async function isAdmin(request, env) {
   return crypto.subtle.timingSafeEqual(expectedHash, actualHash);
 }
 
-async function logSms(env, ticket, event, message, provider, providerId = null) {
-  await env.DB.prepare("INSERT INTO sms_logs (ticket_id, event, recipient, message, provider, provider_id, sent_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
-    .bind(ticket.id, event, ticket.phone, message, provider, providerId, new Date().toISOString()).run();
-}
-
 async function sendSms(env, ticket, message, event) {
   if (env.TWILIO_ACCOUNT_SID && env.TWILIO_AUTH_TOKEN && env.TWILIO_FROM) {
     const to = ticket.phone.startsWith("09") ? `+886${ticket.phone.slice(1)}` : ticket.phone;
@@ -116,7 +119,6 @@ async function sendSms(env, ticket, message, event) {
     const response = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${encodeURIComponent(env.TWILIO_ACCOUNT_SID)}/Messages.json`, { method: "POST", headers: { Authorization: `Basic ${auth}`, "Content-Type": "application/x-www-form-urlencoded" }, body: form });
     if (!response.ok) throw new Error(`Twilio 簡訊發送失敗（${response.status}）`);
     const result = await response.json();
-    await logSms(env, ticket, event, message, "twilio", result.sid || null);
     return { provider: "twilio", providerId: result.sid || null };
   }
   if (env.SMS_WEBHOOK_URL) {
@@ -124,10 +126,8 @@ async function sendSms(env, ticket, message, event) {
     if (env.SMS_WEBHOOK_TOKEN) headers.Authorization = `Bearer ${env.SMS_WEBHOOK_TOKEN}`;
     const response = await fetch(env.SMS_WEBHOOK_URL, { method: "POST", headers, body: JSON.stringify({ to: ticket.phone, message, ticketId: ticket.id, number: ticket.number, event }) });
     if (!response.ok) throw new Error(`簡訊 Webhook 發送失敗（${response.status}）`);
-    await logSms(env, ticket, event, message, "webhook");
     return { provider: "webhook", providerId: null };
   }
-  await logSms(env, ticket, event, message, "simulation");
   return { provider: "simulation", providerId: null };
 }
 
@@ -136,11 +136,16 @@ function reminderMessage(ticket) {
 }
 
 async function deliverReminder(env, ticket, event = "five-minute-reminder") {
-  const delivery = await sendSms(env, ticket, reminderMessage(ticket), event);
+  const message = reminderMessage(ticket);
+  const delivery = await sendSms(env, ticket, message, event);
   const now = new Date().toISOString();
-  await env.DB.prepare("UPDATE tickets SET reminder_sent_at = ?, reminder_provider = ?, reminder_provider_id = ?, reminder_error = NULL, updated_at = ? WHERE id = ?")
-    .bind(now, delivery.provider, delivery.providerId, now, ticket.id).run();
-  return getTicket(env, ticket.id);
+  await env.DB.batch([
+    env.DB.prepare("INSERT INTO sms_logs (ticket_id, event, recipient, message, provider, provider_id, sent_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
+      .bind(ticket.id, event, ticket.phone, message, delivery.provider, delivery.providerId, now),
+    env.DB.prepare("UPDATE tickets SET reminder_sent_at = ?, reminder_provider = ?, reminder_provider_id = ?, reminder_error = NULL, updated_at = ? WHERE id = ?")
+      .bind(now, delivery.provider, delivery.providerId, now, ticket.id)
+  ]);
+  return { ...ticket, reminderSentAt: now, reminderProvider: delivery.provider, reminderProviderId: delivery.providerId, reminderError: null, updatedAt: now };
 }
 
 async function processDueReminders(env) {
@@ -156,13 +161,16 @@ async function processDueReminders(env) {
 }
 
 async function postponeMissedTicket(env, ticket, now) {
-  const result = await env.DB.prepare("SELECT id, queue_order, joined_at FROM tickets WHERE status IN ('waiting', 'missed') AND id != ? ORDER BY queue_order, joined_at").bind(ticket.id).all();
+  const [result, settingsResult] = await env.DB.batch([
+    env.DB.prepare("SELECT id, queue_order, joined_at FROM tickets WHERE status IN ('waiting', 'missed') AND id != ? ORDER BY queue_order, joined_at").bind(ticket.id),
+    env.DB.prepare("SELECT key, value FROM settings")
+  ]);
   const queue = result.results || [];
   let formerIndex = queue.findIndex(row => Number(row.queue_order) > ticket.queueOrder || (Number(row.queue_order) === ticket.queueOrder && row.joined_at > ticket.joinedAt));
   if (formerIndex < 0) formerIndex = queue.length;
   const newIndex = Math.min(formerIndex + 3, queue.length);
   const targetOrder = newIndex > formerIndex ? Number(queue[newIndex - 1].queue_order) : ticket.queueOrder;
-  const settings = await getSettings(env);
+  const settings = settingsFromRows(settingsResult.results || []);
   const estimatedMinutes = Math.max(settings.avgMinutesPerGroup, (newIndex + 1) * settings.avgMinutesPerGroup);
   const estimatedEntryAt = new Date(new Date(now).getTime() + estimatedMinutes * 60_000).toISOString();
   const statements = [];
@@ -192,7 +200,7 @@ async function processQueueAutomation(env) {
   await processDueReminders(env);
 }
 
-async function handleApi(request, env, url) {
+async function handleApi(request, env, url, ctx) {
   const { pathname, searchParams } = url;
   const method = request.method;
   if (method === "GET" && pathname === "/api/health") return json(request, env, { ok: true, storage: "d1", reminderMinutes: REMINDER_MINUTES, seatHoldMinutes: SEAT_HOLD_MINUTES });
@@ -203,32 +211,45 @@ async function handleApi(request, env, url) {
     const phone = cleanPhone(body.phone);
     if (name.length < 2 || name.length > 30) return fail(request, env, 400, "姓名需為 2 至 30 個字");
     if (!validPhone(phone)) return fail(request, env, 400, "請輸入正確的台灣手機號碼");
-    const settings = await getSettings(env);
-    const waiting = await env.DB.prepare("SELECT COUNT(*) AS count FROM tickets WHERE status IN ('waiting', 'missed')").first();
-    const lastOrder = await env.DB.prepare("SELECT MAX(queue_order) AS value FROM tickets").first();
-    const last = await env.DB.prepare("SELECT MAX(CAST(SUBSTR(number, 2) AS INTEGER)) AS seq FROM tickets WHERE date_key = ?").bind(dateKey()).first();
-    const seq = Number(last?.seq || 0) + 1;
-    const ahead = Number(waiting?.count || 0);
-    const estimatedMinutes = Math.max(settings.defaultWaitMinutes, (ahead + 1) * settings.avgMinutesPerGroup);
     const now = new Date();
-    const ticket = {
-      id: crypto.randomUUID(), dateKey: dateKey(now), number: `A${String(seq).padStart(3, "0")}`, storeId: body.storeId || settings.storeId,
-      name, phone, status: "waiting", queueOrder: Number(lastOrder?.value || 0) + 1000, missedCount: 0,
-      currentNumber: settings.currentNumber, ahead, estimatedMinutes,
-      estimatedEntryAt: new Date(now.getTime() + estimatedMinutes * 60_000).toISOString(), joinedAt: now.toISOString(), updatedAt: now.toISOString(),
-      calledAt: null, missedAt: null, seatedAt: null, cancelledAt: null, reminderSentAt: null, reminderProvider: null, reminderProviderId: null,
-      reminderError: null, callMessageSentAt: null, callMessageProvider: null, callMessageError: null
-    };
-    await env.DB.prepare("INSERT INTO tickets (id, date_key, number, store_id, name, phone, status, queue_order, missed_count, current_number, ahead, estimated_minutes, estimated_entry_at, joined_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-      .bind(ticket.id, ticket.dateKey, ticket.number, ticket.storeId, ticket.name, ticket.phone, ticket.status, ticket.queueOrder, ticket.missedCount, ticket.currentNumber, ticket.ahead, ticket.estimatedMinutes, ticket.estimatedEntryAt, ticket.joinedAt, ticket.updatedAt).run();
-    return json(request, env, await publicTicket(env, ticket), 201);
+    const today = dateKey(now);
+    const timestamp = now.toISOString();
+    const result = await env.DB.prepare(`
+      INSERT INTO tickets (
+        id, date_key, number, store_id, name, phone, status, queue_order, missed_count,
+        current_number, ahead, estimated_minutes, estimated_entry_at, joined_at, updated_at
+      )
+      WITH computed AS (
+        SELECT
+          (SELECT COUNT(*) FROM tickets WHERE status IN ('waiting', 'missed')) AS ahead_count,
+          COALESCE((SELECT MAX(queue_order) FROM tickets), 0) + 1000 AS next_order,
+          COALESCE((SELECT MAX(CAST(SUBSTR(number, 2) AS INTEGER)) FROM tickets WHERE date_key = ?), 0) + 1 AS next_sequence,
+          COALESCE(CAST((SELECT value FROM settings WHERE key = 'defaultWaitMinutes') AS INTEGER), ?) AS default_wait,
+          COALESCE(CAST((SELECT value FROM settings WHERE key = 'avgMinutesPerGroup') AS INTEGER), ?) AS average_wait,
+          COALESCE((SELECT value FROM settings WHERE key = 'currentNumber'), ?) AS live_current_number
+      ), timing AS (
+        SELECT *, MAX(default_wait, (ahead_count + 1) * average_wait) AS wait_minutes FROM computed
+      )
+      SELECT ?, ?, 'A' || printf('%03d', next_sequence), ?, ?, ?, 'waiting', next_order, 0,
+        live_current_number, ahead_count, wait_minutes,
+        strftime('%Y-%m-%dT%H:%M:%fZ', ?, '+' || wait_minutes || ' minutes'), ?, ?
+      FROM timing
+      RETURNING *
+    `).bind(
+      today, DEFAULT_SETTINGS.defaultWaitMinutes, DEFAULT_SETTINGS.avgMinutesPerGroup, DEFAULT_SETTINGS.currentNumber,
+      crypto.randomUUID(), today, body.storeId || DEFAULT_SETTINGS.storeId, name, phone, timestamp, timestamp, timestamp
+    ).run();
+    const row = result.results?.[0];
+    if (!row) return fail(request, env, 500, "建立候位資料失敗");
+    const ticket = rowToTicket(row);
+    return json(request, env, toPublicTicket(ticket, ticket.currentNumber, ticket.ahead), 201);
   }
 
   const publicMatch = pathname.match(/^\/api\/queue\/([0-9a-f-]+)$/i);
   if (publicMatch && method === "GET") {
-    await processQueueAutomation(env);
-    const ticket = await getTicket(env, publicMatch[1]);
-    return ticket ? json(request, env, await publicTicket(env, ticket)) : fail(request, env, 404, "找不到候位資料");
+    ctx.waitUntil(processQueueAutomation(env));
+    const ticket = await getPublicTicket(env, publicMatch[1]);
+    return ticket ? json(request, env, ticket) : fail(request, env, 404, "找不到候位資料");
   }
   if (publicMatch && method === "DELETE") {
     const now = new Date().toISOString();
@@ -238,45 +259,59 @@ async function handleApi(request, env, url) {
 
   if (pathname.startsWith("/api/admin/") && !(await isAdmin(request, env))) return fail(request, env, 401, "後台密碼錯誤");
   if (method === "GET" && pathname === "/api/admin/queue") {
-    await processQueueAutomation(env);
+    ctx.waitUntil(processQueueAutomation(env));
     const filter = searchParams.get("status") || "active";
     let query = "SELECT * FROM tickets ORDER BY joined_at";
     if (filter === "active") query = "SELECT * FROM tickets WHERE status IN ('waiting', 'called', 'missed') ORDER BY CASE WHEN status = 'called' THEN 0 ELSE 1 END, queue_order, joined_at";
     else if (filter !== "all") query = "SELECT * FROM tickets WHERE status = ? ORDER BY queue_order, joined_at";
-    const result = filter !== "all" && filter !== "active" ? await env.DB.prepare(query).bind(filter).all() : await env.DB.prepare(query).all();
-    const activeOrder = await env.DB.prepare("SELECT id FROM tickets WHERE status IN ('waiting', 'missed') ORDER BY queue_order, joined_at").all();
+    const ticketStatement = filter !== "all" && filter !== "active" ? env.DB.prepare(query).bind(filter) : env.DB.prepare(query);
+    const [result, activeOrder, counts, today, settingsResult] = await env.DB.batch([
+      ticketStatement,
+      env.DB.prepare("SELECT id FROM tickets WHERE status IN ('waiting', 'missed') ORDER BY queue_order, joined_at"),
+      env.DB.prepare("SELECT status, COUNT(*) AS count FROM tickets GROUP BY status"),
+      env.DB.prepare("SELECT COUNT(*) AS count FROM tickets WHERE date_key = ?").bind(dateKey()),
+      env.DB.prepare("SELECT key, value FROM settings")
+    ]);
     const positions = new Map((activeOrder.results || []).map((row, index) => [row.id, index + 1]));
-    const counts = await env.DB.prepare("SELECT status, COUNT(*) AS count FROM tickets GROUP BY status").all();
-    const today = await env.DB.prepare("SELECT COUNT(*) AS count FROM tickets WHERE date_key = ?").bind(dateKey()).first();
     const byStatus = Object.fromEntries((counts.results || []).map(row => [row.status, Number(row.count)]));
-    return json(request, env, { tickets: (result.results || []).map(row => { const ticket = rowToTicket(row); return { ...ticket, queuePosition: positions.get(ticket.id) || null }; }), stats: { waiting: byStatus.waiting || 0, called: byStatus.called || 0, missed: byStatus.missed || 0, seated: byStatus.seated || 0, todayTotal: Number(today?.count || 0) }, settings: await getSettings(env), checkedAt: new Date().toISOString() });
+    const todayCount = Number(today.results?.[0]?.count || 0);
+    return json(request, env, { tickets: (result.results || []).map(row => { const ticket = rowToTicket(row); return { ...ticket, queuePosition: positions.get(ticket.id) || null }; }), stats: { waiting: byStatus.waiting || 0, called: byStatus.called || 0, missed: byStatus.missed || 0, seated: byStatus.seated || 0, todayTotal: todayCount }, settings: settingsFromRows(settingsResult.results || []), checkedAt: new Date().toISOString() });
   }
   if (method === "GET" && pathname === "/api/admin/settings") return json(request, env, await getSettings(env));
   if (method === "PATCH" && pathname === "/api/admin/settings") {
     const body = await readBody(request);
-    const settings = await getSettings(env);
-    if (body.defaultWaitMinutes !== undefined) settings.defaultWaitMinutes = Math.max(0, Math.min(600, Number(body.defaultWaitMinutes) || 0));
-    if (body.avgMinutesPerGroup !== undefined) settings.avgMinutesPerGroup = Math.max(1, Math.min(120, Number(body.avgMinutesPerGroup) || 1));
+    const updates = [];
+    const now = new Date().toISOString();
+    if (body.defaultWaitMinutes !== undefined) {
+      const value = Math.max(0, Math.min(600, Number(body.defaultWaitMinutes) || 0));
+      updates.push(env.DB.prepare("INSERT INTO settings (key, value, updated_at) VALUES ('defaultWaitMinutes', ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at").bind(String(value), now));
+    }
+    if (body.avgMinutesPerGroup !== undefined) {
+      const value = Math.max(1, Math.min(120, Number(body.avgMinutesPerGroup) || 1));
+      updates.push(env.DB.prepare("INSERT INTO settings (key, value, updated_at) VALUES ('avgMinutesPerGroup', ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at").bind(String(value), now));
+    }
     if (body.currentNumber !== undefined) {
       const number = String(body.currentNumber).toUpperCase().trim();
       if (!validNumber(number)) return fail(request, env, 400, "目前叫號格式需為 A001");
-      settings.currentNumber = number;
+      updates.push(env.DB.prepare("INSERT INTO settings (key, value, updated_at) VALUES ('currentNumber', ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at").bind(number, now));
     }
-    return json(request, env, await saveSettings(env, settings));
+    updates.push(env.DB.prepare("SELECT key, value FROM settings"));
+    const results = await env.DB.batch(updates);
+    return json(request, env, settingsFromRows(results.at(-1)?.results || []));
   }
 
   const adminMatch = pathname.match(/^\/api\/admin\/queue\/([0-9a-f-]+)(?:\/(remind|call|complete|cancel))?$/i);
   if (adminMatch && method === "PATCH" && !adminMatch[2]) {
     const body = await readBody(request);
-    const ticket = await getTicket(env, adminMatch[1]);
-    if (!ticket) return fail(request, env, 404, "找不到候位資料");
     const minutes = Math.max(0, Math.min(600, Number(body.estimatedMinutes) || 0));
     const now = new Date().toISOString();
     const estimatedEntryAt = new Date(Date.now() + minutes * 60_000).toISOString();
-    await env.DB.prepare("UPDATE tickets SET estimated_minutes = ?, estimated_entry_at = ?, reminder_sent_at = CASE WHEN ? > ? THEN NULL ELSE reminder_sent_at END, reminder_error = NULL, updated_at = ? WHERE id = ?")
-      .bind(minutes, estimatedEntryAt, minutes, REMINDER_MINUTES, now, ticket.id).run();
-    await processDueReminders(env);
-    return json(request, env, await getTicket(env, ticket.id));
+    const result = await env.DB.prepare("UPDATE tickets SET estimated_minutes = ?, estimated_entry_at = ?, reminder_sent_at = CASE WHEN ? > ? THEN NULL ELSE reminder_sent_at END, reminder_error = NULL, updated_at = ? WHERE id = ? RETURNING *")
+      .bind(minutes, estimatedEntryAt, minutes, REMINDER_MINUTES, now, adminMatch[1]).run();
+    const row = result.results?.[0];
+    if (!row) return fail(request, env, 404, "找不到候位資料");
+    ctx.waitUntil(processDueReminders(env));
+    return json(request, env, rowToTicket(row));
   }
   if (adminMatch && method === "POST" && adminMatch[2] === "remind") {
     const ticket = await getTicket(env, adminMatch[1]);
@@ -285,39 +320,50 @@ async function handleApi(request, env, url) {
     catch (error) { return fail(request, env, 502, error.message); }
   }
   if (adminMatch && method === "POST" && adminMatch[2] === "call") {
-    let ticket = await getTicket(env, adminMatch[1]);
-    if (!ticket) return fail(request, env, 404, "找不到候位資料");
-    if (!['waiting', 'missed'].includes(ticket.status)) return fail(request, env, 409, "此號碼目前無法叫號");
     const now = new Date().toISOString();
-    await env.DB.prepare("UPDATE tickets SET status = 'called', called_at = ?, estimated_minutes = 0, estimated_entry_at = ?, current_number = number, updated_at = ? WHERE id = ?").bind(now, now, now, ticket.id).run();
-    const settings = await getSettings(env); settings.currentNumber = ticket.number; await saveSettings(env, settings); ticket = await getTicket(env, ticket.id);
+    const [ticketResult] = await env.DB.batch([
+      env.DB.prepare("UPDATE tickets SET status = 'called', called_at = ?, estimated_minutes = 0, estimated_entry_at = ?, current_number = number, updated_at = ? WHERE id = ? AND status IN ('waiting', 'missed') RETURNING *").bind(now, now, now, adminMatch[1]),
+      env.DB.prepare("INSERT INTO settings (key, value, updated_at) SELECT 'currentNumber', number, ? FROM tickets WHERE id = ? AND status = 'called' AND called_at = ? ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at").bind(now, adminMatch[1], now)
+    ]);
+    const row = ticketResult.results?.[0];
+    if (!row) return fail(request, env, 409, "此號碼目前無法叫號");
+    let ticket = rowToTicket(row);
     try {
       const message = `${STORE_NAME}通知：候位號碼 ${ticket.number} 已叫號，請儘速至櫃台報到入席。`;
       const delivery = await sendSms(env, ticket, message, "called");
-      await env.DB.prepare("UPDATE tickets SET call_message_sent_at = ?, call_message_provider = ?, call_message_error = NULL, updated_at = ? WHERE id = ?").bind(new Date().toISOString(), delivery.provider, new Date().toISOString(), ticket.id).run();
+      const sentAt = new Date().toISOString();
+      await env.DB.batch([
+        env.DB.prepare("INSERT INTO sms_logs (ticket_id, event, recipient, message, provider, provider_id, sent_at) VALUES (?, 'called', ?, ?, ?, ?, ?)").bind(ticket.id, ticket.phone, message, delivery.provider, delivery.providerId, sentAt),
+        env.DB.prepare("UPDATE tickets SET call_message_sent_at = ?, call_message_provider = ?, call_message_error = NULL, updated_at = ? WHERE id = ?").bind(sentAt, delivery.provider, sentAt, ticket.id)
+      ]);
+      ticket = { ...ticket, callMessageSentAt: sentAt, callMessageProvider: delivery.provider, callMessageError: null, updatedAt: sentAt };
     } catch (error) {
-      await env.DB.prepare("UPDATE tickets SET call_message_error = ?, updated_at = ? WHERE id = ?").bind(error.message, new Date().toISOString(), ticket.id).run();
+      const failedAt = new Date().toISOString();
+      await env.DB.prepare("UPDATE tickets SET call_message_error = ?, updated_at = ? WHERE id = ?").bind(error.message, failedAt, ticket.id).run();
+      ticket = { ...ticket, callMessageError: error.message, updatedAt: failedAt };
     }
-    return json(request, env, await getTicket(env, ticket.id));
+    return json(request, env, ticket);
   }
   if (adminMatch && method === "POST" && adminMatch[2] === "complete") {
     const now = new Date().toISOString();
-    const result = await env.DB.prepare("UPDATE tickets SET status = 'seated', seated_at = ?, updated_at = ? WHERE id = ? AND status = 'called'").bind(now, now, adminMatch[1]).run();
-    return result.meta.changes ? json(request, env, await getTicket(env, adminMatch[1])) : fail(request, env, 404, "找不到候位資料");
+    const result = await env.DB.prepare("UPDATE tickets SET status = 'seated', seated_at = ?, updated_at = ? WHERE id = ? AND status = 'called' RETURNING *").bind(now, now, adminMatch[1]).run();
+    const row = result.results?.[0];
+    return row ? json(request, env, rowToTicket(row)) : fail(request, env, 404, "找不到候位資料");
   }
   if (adminMatch && method === "POST" && adminMatch[2] === "cancel") {
     const now = new Date().toISOString();
-    const result = await env.DB.prepare("UPDATE tickets SET status = 'cancelled', cancelled_at = ?, updated_at = ? WHERE id = ? AND status IN ('waiting', 'called', 'missed')").bind(now, now, adminMatch[1]).run();
-    return result.meta.changes ? json(request, env, await getTicket(env, adminMatch[1])) : fail(request, env, 409, "此號碼目前無法取消");
+    const result = await env.DB.prepare("UPDATE tickets SET status = 'cancelled', cancelled_at = ?, updated_at = ? WHERE id = ? AND status IN ('waiting', 'called', 'missed') RETURNING *").bind(now, now, adminMatch[1]).run();
+    const row = result.results?.[0];
+    return row ? json(request, env, rowToTicket(row)) : fail(request, env, 409, "此號碼目前無法取消");
   }
   return fail(request, env, 404, "找不到 API 路徑");
 }
 
-async function fetchHandler(request, env) {
+async function fetchHandler(request, env, ctx) {
   const url = new URL(request.url);
   try {
     if (request.method === "OPTIONS" && url.pathname.startsWith("/api/")) return new Response(null, { status: 204, headers: corsHeaders(request, env) });
-    if (url.pathname.startsWith("/api/")) return await handleApi(request, env, url);
+    if (url.pathname.startsWith("/api/")) return await handleApi(request, env, url, ctx);
     return json(request, env, { service: "qing-queue-api", health: "/api/health" });
   } catch (error) {
     return fail(request, env, error.message === "JSON 格式錯誤" ? 400 : 500, error.message || "伺服器錯誤");

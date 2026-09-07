@@ -5,6 +5,9 @@
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
   <meta name="theme-color" content="#484848">
   <title>慶壽喜燒｜線上候位</title>
+  <link rel="dns-prefetch" href="//qing-queue-api.pcc1005.workers.dev">
+  <link rel="preconnect" href="https://qing-queue-api.pcc1005.workers.dev" crossorigin>
+  <link rel="preload" href="config.js" as="script">
   <style>
     :root{--ink:#303136;--muted:#686a73;--paper:#b0b2be;--card:#fff;--green:#484848;--green2:#393939;--gold:#b0b2be;--line:#d9dae0;--danger:#a43b31;--shadow:0 20px 55px rgba(72,72,72,.14)}
     *{box-sizing:border-box} html{scroll-behavior:smooth} body{margin:0;background:var(--paper);color:var(--ink);font-family:-apple-system,BlinkMacSystemFont,"Noto Sans TC","Segoe UI",sans-serif;line-height:1.55}
@@ -90,7 +93,9 @@
 
     async function api(path, options={}){
       if(!CONFIG.API_BASE) return demoApi(path, options);
-      const res = await fetch(CONFIG.API_BASE.replace(/\/$/,"")+path,{...options,headers:{"Content-Type":"application/json",...(options.headers||{})}});
+      const headers={...(options.headers||{})};
+      if(options.body&&!Object.keys(headers).some(key=>key.toLowerCase()==="content-type"))headers["Content-Type"]="text/plain;charset=UTF-8";
+      const res = await fetch(CONFIG.API_BASE.replace(/\/$/,"")+path,{...options,headers});
       if(!res.ok) throw new Error((await res.json().catch(()=>({}))).message || "服務暫時無法使用");
       return res.json();
     }
