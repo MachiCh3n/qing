@@ -73,7 +73,7 @@
 
   <script>
     /* 後台串接設定：填入 API_BASE 即切換為正式 JSON API；空白時使用本機展示模式。 */
-    const CONFIG = { API_BASE: "", STORE_ID: "qing-linkou", AVG_MINUTES_PER_GROUP: 5 };
+    const CONFIG = { API_BASE: "/api", STORE_ID: "qing-linkou", AVG_MINUTES_PER_GROUP: 5 };
     const DEMO_KEY = "qing-sukiyaki-active-ticket";
     const $ = (s) => document.querySelector(s);
     const pad = n => String(n).padStart(2,"0");
@@ -105,7 +105,7 @@
     function renderTicket(ticket){
       activeTicket=ticket;$("#formCard").style.display="none";$("#queueCard").classList.add("show");$("#s2").classList.add("active");
       $("#pageTitle").textContent=`${ticket.name}，候位已完成`;$("#pageSub").textContent="請留意叫號進度與手機簡訊。";
-      $("#ticketNo").textContent=ticket.number;$("#currentNo").textContent=ticket.currentNumber;$("#ahead").textContent=ticket.ahead;$("#estimate").textContent=ticket.estimatedMinutes>0?`約 ${ticket.estimatedMinutes} 分`:"即將叫號";$("#arrival").textContent=getArrival(ticket.estimatedMinutes);
+      $("#ticketNo").textContent=ticket.number;$("#currentNo").textContent=ticket.currentNumber;$("#ahead").textContent=ticket.ahead;$("#estimate").textContent=ticket.estimatedMinutes>0?`約 ${ticket.estimatedMinutes} 分`:"即將叫號";$("#arrival").textContent=ticket.estimatedEntryAt?new Date(ticket.estimatedEntryAt).toLocaleTimeString("zh-TW",{hour:"2-digit",minute:"2-digit",hour12:false}):getArrival(ticket.estimatedMinutes);
       $("#timebar").style.width=`${Math.max(8,Math.min(95,100-ticket.ahead*12))}%`;$("#updatedAt").textContent=`最後更新：${nowText()}`;
       history.replaceState(null,"","#ticket="+encodeURIComponent(ticket.id));
     }
@@ -121,7 +121,7 @@
     $("#refreshBtn").addEventListener("click",async()=>{try{const t=await api(`/queue/${encodeURIComponent(activeTicket.id)}`);renderTicket(t);showToast("候位進度已更新")}catch(err){showToast(err.message)}});
     $("#cancelBtn").addEventListener("click",()=>$("#cancelDialog").showModal());$("#keepBtn").addEventListener("click",()=>$("#cancelDialog").close());
     $("#confirmCancelBtn").addEventListener("click",async()=>{try{await api(`/queue/${encodeURIComponent(activeTicket.id)}`,{method:"DELETE"});$("#cancelDialog").close();resetView();showToast("候位已取消")}catch(err){showToast(err.message)}});
-    window.addEventListener("DOMContentLoaded",()=>{const saved=JSON.parse(localStorage.getItem(DEMO_KEY)||"null");if(!CONFIG.API_BASE&&saved?.status==="waiting")renderTicket(saved)});
+    window.addEventListener("DOMContentLoaded",async()=>{if(!CONFIG.API_BASE){const saved=JSON.parse(localStorage.getItem(DEMO_KEY)||"null");if(saved?.status==="waiting")renderTicket(saved);return}const id=new URLSearchParams(location.hash.slice(1)).get("ticket");if(id){try{renderTicket(await api(`/queue/${encodeURIComponent(id)}`))}catch{history.replaceState(null,"",location.pathname)}}});
   </script>
 </body>
 </html>
