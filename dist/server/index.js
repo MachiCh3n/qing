@@ -56,19 +56,40 @@ function dateKey(date = new Date()) {
   return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Taipei", year: "numeric", month: "2-digit", day: "2-digit" }).format(date);
 }
 
-function settingsFromRows(rows = []) {
+function fiveMinuteValue(value, min, max, fallback) {
+  const number = Number(value);
+  const normalized = Number.isFinite(number) ? Math.round(number / 5) * 5 : fallback;
+  return Math.max(min, Math.min(max, normalized));
+}
+
+function settingsFromRows(rows = [], effectiveCurrentNumber = "") {
   const stored = Object.fromEntries(rows.map(row => [row.key, row.value]));
   return {
     ...DEFAULT_SETTINGS,
-    defaultWaitMinutes: Number(stored.defaultWaitMinutes ?? DEFAULT_SETTINGS.defaultWaitMinutes),
-    avgMinutesPerGroup: Number(stored.avgMinutesPerGroup ?? DEFAULT_SETTINGS.avgMinutesPerGroup),
-    currentNumber: stored.currentNumber || DEFAULT_SETTINGS.currentNumber
+    defaultWaitMinutes: fiveMinuteValue(stored.defaultWaitMinutes, 0, 600, DEFAULT_SETTINGS.defaultWaitMinutes),
+    avgMinutesPerGroup: fiveMinuteValue(stored.avgMinutesPerGroup, 5, 120, DEFAULT_SETTINGS.avgMinutesPerGroup),
+    currentNumber: effectiveCurrentNumber || stored.currentNumber || DEFAULT_SETTINGS.currentNumber
   };
 }
 
+function effectiveCurrentNumberStatement(env, day = dateKey()) {
+  return env.DB.prepare(`
+    SELECT COALESCE(
+      (SELECT number FROM tickets WHERE date_key = ? AND status = 'called' ORDER BY called_at DESC LIMIT 1),
+      (SELECT number FROM tickets WHERE date_key = ? AND number = (SELECT value FROM settings WHERE key = 'currentNumber') AND status IN ('waiting', 'missed') LIMIT 1),
+      (SELECT number FROM tickets WHERE date_key = ? AND status IN ('waiting', 'missed') ORDER BY queue_order, joined_at LIMIT 1),
+      (SELECT value FROM settings WHERE key = 'currentNumber'),
+      ?
+    ) AS number
+  `).bind(day, day, day, DEFAULT_SETTINGS.currentNumber);
+}
+
 async function getSettings(env) {
-  const result = await env.DB.prepare("SELECT key, value FROM settings").all();
-  return settingsFromRows(result.results || []);
+  const [settingsResult, currentResult] = await env.DB.batch([
+    env.DB.prepare("SELECT key, value FROM settings"),
+    effectiveCurrentNumberStatement(env)
+  ]);
+  return settingsFromRows(settingsResult.results || [], currentResult.results?.[0]?.number);
 }
 
 function rowToTicket(row) {
@@ -98,7 +119,13 @@ function toPublicTicket(ticket, currentNumber, aheadValue) {
 async function getPublicTicket(env, id) {
   const row = await env.DB.prepare(`
     SELECT t.*,
-      COALESCE((SELECT value FROM settings WHERE key = 'currentNumber'), ?) AS live_current_number,
+      COALESCE(
+        (SELECT number FROM tickets WHERE date_key = t.date_key AND status = 'called' ORDER BY called_at DESC LIMIT 1),
+        (SELECT number FROM tickets WHERE date_key = t.date_key AND number = (SELECT value FROM settings WHERE key = 'currentNumber') AND status IN ('waiting', 'missed') LIMIT 1),
+        (SELECT number FROM tickets WHERE date_key = t.date_key AND status IN ('waiting', 'missed') ORDER BY queue_order, joined_at LIMIT 1),
+        (SELECT value FROM settings WHERE key = 'currentNumber'),
+        ?
+      ) AS live_current_number,
       CASE WHEN t.status IN ('waiting', 'missed') THEN (
         SELECT COUNT(*) FROM tickets q
         WHERE q.status IN ('waiting', 'missed')
@@ -432,17 +459,20 @@ async function handleApi(request, env, url, ctx) {
     if (filter === "active") query = "SELECT * FROM tickets WHERE status IN ('waiting', 'called', 'missed') ORDER BY CASE WHEN status = 'called' THEN 0 ELSE 1 END, queue_order, joined_at";
     else if (filter !== "all") query = "SELECT * FROM tickets WHERE status = ? ORDER BY queue_order, joined_at";
     const ticketStatement = filter !== "all" && filter !== "active" ? env.DB.prepare(query).bind(filter) : env.DB.prepare(query);
-    const [result, activeOrder, counts, today, settingsResult] = await env.DB.batch([
+    const todayKey = dateKey();
+    const [result, activeOrder, counts, today, settingsResult, currentResult, numberResult] = await env.DB.batch([
       ticketStatement,
       env.DB.prepare("SELECT id FROM tickets WHERE status IN ('waiting', 'missed') ORDER BY queue_order, joined_at"),
       env.DB.prepare("SELECT status, COUNT(*) AS count FROM tickets GROUP BY status"),
-      env.DB.prepare("SELECT COUNT(*) AS count FROM tickets WHERE date_key = ?").bind(dateKey()),
-      env.DB.prepare("SELECT key, value FROM settings")
+      env.DB.prepare("SELECT COUNT(*) AS count FROM tickets WHERE date_key = ?").bind(todayKey),
+      env.DB.prepare("SELECT key, value FROM settings"),
+      effectiveCurrentNumberStatement(env, todayKey),
+      env.DB.prepare("SELECT number FROM tickets WHERE date_key = ? AND status IN ('waiting', 'called', 'missed') ORDER BY CASE WHEN status = 'called' THEN 0 ELSE 1 END, queue_order, joined_at").bind(todayKey)
     ]);
     const positions = new Map((activeOrder.results || []).map((row, index) => [row.id, index + 1]));
     const byStatus = Object.fromEntries((counts.results || []).map(row => [row.status, Number(row.count)]));
     const todayCount = Number(today.results?.[0]?.count || 0);
-    return json(request, env, { tickets: (result.results || []).map(row => { const ticket = rowToTicket(row); return { ...ticket, queuePosition: positions.get(ticket.id) || null }; }), stats: { waiting: byStatus.waiting || 0, called: byStatus.called || 0, missed: byStatus.missed || 0, seated: byStatus.seated || 0, todayTotal: todayCount }, settings: settingsFromRows(settingsResult.results || []), checkedAt: new Date().toISOString() });
+    return json(request, env, { tickets: (result.results || []).map(row => { const ticket = rowToTicket(row); return { ...ticket, queuePosition: positions.get(ticket.id) || null }; }), availableNumbers: (numberResult.results || []).map(row => row.number), stats: { waiting: byStatus.waiting || 0, called: byStatus.called || 0, missed: byStatus.missed || 0, seated: byStatus.seated || 0, todayTotal: todayCount }, settings: settingsFromRows(settingsResult.results || [], currentResult.results?.[0]?.number), checkedAt: new Date().toISOString() });
   }
   if (method === "GET" && pathname === "/api/admin/settings") return json(request, env, await getSettings(env));
   if (method === "PATCH" && pathname === "/api/admin/settings") {
@@ -450,11 +480,11 @@ async function handleApi(request, env, url, ctx) {
     const updates = [];
     const now = new Date().toISOString();
     if (body.defaultWaitMinutes !== undefined) {
-      const value = Math.max(0, Math.min(600, Number(body.defaultWaitMinutes) || 0));
+      const value = fiveMinuteValue(body.defaultWaitMinutes, 0, 600, DEFAULT_SETTINGS.defaultWaitMinutes);
       updates.push(env.DB.prepare("INSERT INTO settings (key, value, updated_at) VALUES ('defaultWaitMinutes', ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at").bind(String(value), now));
     }
     if (body.avgMinutesPerGroup !== undefined) {
-      const value = Math.max(1, Math.min(120, Number(body.avgMinutesPerGroup) || 1));
+      const value = fiveMinuteValue(body.avgMinutesPerGroup, 5, 120, DEFAULT_SETTINGS.avgMinutesPerGroup);
       updates.push(env.DB.prepare("INSERT INTO settings (key, value, updated_at) VALUES ('avgMinutesPerGroup', ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at").bind(String(value), now));
     }
     if (body.currentNumber !== undefined) {
@@ -463,14 +493,15 @@ async function handleApi(request, env, url, ctx) {
       updates.push(env.DB.prepare("INSERT INTO settings (key, value, updated_at) VALUES ('currentNumber', ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at").bind(number, now));
     }
     updates.push(env.DB.prepare("SELECT key, value FROM settings"));
+    updates.push(effectiveCurrentNumberStatement(env));
     const results = await env.DB.batch(updates);
-    return json(request, env, settingsFromRows(results.at(-1)?.results || []));
+    return json(request, env, settingsFromRows(results.at(-2)?.results || [], results.at(-1)?.results?.[0]?.number));
   }
 
   const adminMatch = pathname.match(/^\/api\/admin\/queue\/([0-9a-f-]+)(?:\/(remind|call|complete|cancel))?$/i);
   if (adminMatch && method === "PATCH" && !adminMatch[2]) {
     const body = await readBody(request);
-    const minutes = Math.max(0, Math.min(600, Number(body.estimatedMinutes) || 0));
+    const minutes = fiveMinuteValue(body.estimatedMinutes, 0, 600, 0);
     const now = new Date().toISOString();
     const estimatedEntryAt = new Date(Date.now() + minutes * 60_000).toISOString();
     const result = await env.DB.prepare("UPDATE tickets SET estimated_minutes = ?, estimated_entry_at = ?, reminder_sent_at = CASE WHEN ? > ? THEN NULL ELSE reminder_sent_at END, reminder_error = NULL, updated_at = ? WHERE id = ? RETURNING *")
