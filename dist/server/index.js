@@ -72,6 +72,12 @@ function settingsFromRows(rows = [], effectiveCurrentNumber = "") {
   };
 }
 
+function countdownMinutes(estimatedEntryAt, fallback = 0, now = Date.now()) {
+  const target = new Date(estimatedEntryAt).getTime();
+  if (!Number.isFinite(target)) return Number(fallback || 0);
+  return Math.max(0, Math.ceil((target - now) / 60_000));
+}
+
 function effectiveCurrentNumberStatement(env, day = dateKey()) {
   return env.DB.prepare(`
     SELECT COALESCE(
@@ -93,10 +99,14 @@ async function getSettings(env) {
 }
 
 function rowToTicket(row) {
+  const status = row.status;
+  const estimatedMinutes = ["waiting", "missed"].includes(status)
+    ? countdownMinutes(row.estimated_entry_at, row.estimated_minutes)
+    : Number(row.estimated_minutes || 0);
   return {
     id: row.id, dateKey: row.date_key, number: row.number, storeId: row.store_id, name: row.name, phone: row.phone,
-    status: row.status, queueOrder: Number(row.queue_order || 0), missedCount: Number(row.missed_count || 0),
-    currentNumber: row.current_number, ahead: row.ahead, estimatedMinutes: row.estimated_minutes,
+    status, queueOrder: Number(row.queue_order || 0), missedCount: Number(row.missed_count || 0),
+    currentNumber: row.current_number, ahead: row.ahead, estimatedMinutes,
     estimatedEntryAt: row.estimated_entry_at, joinedAt: row.joined_at, updatedAt: row.updated_at, calledAt: row.called_at,
     missedAt: row.missed_at, seatedAt: row.seated_at, cancelledAt: row.cancelled_at, reminderSentAt: row.reminder_sent_at,
     reminderProvider: row.reminder_provider, reminderProviderId: row.reminder_provider_id, reminderError: row.reminder_error,

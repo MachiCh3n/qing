@@ -191,6 +191,7 @@
     }
     function validPhone(v){return /^09\d{8}$/.test(v)}
     function getArrival(minutes){const d=new Date(Date.now()+minutes*60000);return `${pad(d.getHours())}:${pad(d.getMinutes())}`}
+    function remainingMinutes(ticket){if(!ticket?.estimatedEntryAt)return Number(ticket?.estimatedMinutes||0);const target=new Date(ticket.estimatedEntryAt).getTime();return Number.isFinite(target)?Math.max(0,Math.ceil((target-Date.now())/60000)):Number(ticket.estimatedMinutes||0)}
     function showToast(msg){const el=$("#toast");el.textContent=msg;el.classList.add("show");setTimeout(()=>el.classList.remove("show"),2300)}
     function setLoading(on){$("#submitBtn").disabled=on;$("#submitBtn").textContent=on?"正在取號…":"取得候位號碼"}
     function scheduleExpiryCheck(ticket){
@@ -202,9 +203,9 @@
     function renderTicket(ticket){
       if(["cancelled","seated"].includes(ticket.status)){resetView();if(ticket.status==="cancelled"&&ticket.missedCount>=2)showToast("再次過號，號碼已取消，請重新取號");return false}
       activeTicket=ticket;$("#formCard").style.display="none";$("#queueCard").classList.add("show");$("#s2").classList.add("active");
-      const called=ticket.status==="called",missed=ticket.status==="missed",holdUntil=called&&ticket.calledAt?new Date(new Date(ticket.calledAt).getTime()+SEAT_HOLD_MINUTES*60000):null;
+      const called=ticket.status==="called",missed=ticket.status==="missed",minutes=remainingMinutes(ticket),holdUntil=called&&ticket.calledAt?new Date(new Date(ticket.calledAt).getTime()+SEAT_HOLD_MINUTES*60000):null;
       $("#queueCard").classList.toggle("is-missed",missed);$("#s3").classList.toggle("active",called);$("#pageTitle").textContent=called?`${ticket.name}，席位保留中`:missed?`${ticket.name}，目前已過號`:`${ticket.name}，候位已完成`;$("#pageSub").textContent=called?"請在席位保留時間內至櫃檯報到。":missed?"順位已延後 3 位，號碼會保留至取消或再次過號。":"請留意叫號進度與免費到店推播。";
-      $("#ticketNo").textContent=ticket.number;$("#currentNo").textContent=ticket.currentNumber;$("#ahead").textContent=missed?(ticket.queuePosition||ticket.ahead+1):ticket.ahead;$("#aheadLabel").textContent=missed?"目前候位順位":"前方等候組數";$("#estimate").textContent=called?"保留中":ticket.estimatedMinutes>0?`約 ${ticket.estimatedMinutes} 分`:"即將叫號";$("#arrival").textContent=holdUntil?holdUntil.toLocaleTimeString("zh-TW",{hour:"2-digit",minute:"2-digit",hour12:false}):ticket.estimatedEntryAt?new Date(ticket.estimatedEntryAt).toLocaleTimeString("zh-TW",{hour:"2-digit",minute:"2-digit",hour12:false}):getArrival(ticket.estimatedMinutes);$("#arrivalLabel").textContent=called?"席位保留至":"建議到店時間";
+      $("#ticketNo").textContent=ticket.number;$("#currentNo").textContent=ticket.currentNumber;$("#ahead").textContent=missed?(ticket.queuePosition||ticket.ahead+1):ticket.ahead;$("#aheadLabel").textContent=missed?"目前候位順位":"前方等候組數";$("#estimate").textContent=called?"保留中":minutes>0?`約 ${minutes} 分`:"即將叫號";$("#arrival").textContent=holdUntil?holdUntil.toLocaleTimeString("zh-TW",{hour:"2-digit",minute:"2-digit",hour12:false}):ticket.estimatedEntryAt?new Date(ticket.estimatedEntryAt).toLocaleTimeString("zh-TW",{hour:"2-digit",minute:"2-digit",hour12:false}):getArrival(minutes);$("#arrivalLabel").textContent=called?"席位保留至":"建議到店時間";
       $("#notice").textContent=called?`已為您保留席位至 ${$("#arrival").textContent}；超過 10 分鐘未報到將${ticket.missedCount>=1?"自動取消此號碼":"過號並延後 3 位"}。`:missed?"您已過號一次，順位已延後 3 位。再次叫號後若仍未於 10 分鐘內報到，系統將自動取消此號碼，屆時需重新取號。":"預計入席前 5 分鐘，系統將發送到店推播；點開後會語音播報完整內容。系統通知音與震動仍依手機設定為準。";
       $("#timebar").style.width=called?"100%":`${Math.max(8,Math.min(95,100-ticket.ahead*12))}%`;$("#updatedAt").textContent=`最後更新：${nowText()}`;
       history.replaceState(null,"","#ticket="+encodeURIComponent(ticket.id));
