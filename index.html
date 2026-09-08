@@ -79,6 +79,7 @@
   </div>
 
   <dialog id="cancelDialog"><div class="modal"><h3>確定取消候位？</h3><p>取消後號碼牌將立即失效；如需候位，需重新取號。</p><div class="modal-actions"><button class="secondary" id="keepBtn">繼續候位</button><button class="danger" id="confirmCancelBtn">確認取消</button></div></div></dialog>
+  <dialog id="calledDialog"><div class="modal"><h3>請前往報到</h3><p id="calledDialogText">您的號碼已可入席，請於 10 分鐘內至櫃檯報到。</p><div class="modal-actions" style="grid-template-columns:1fr"><button class="primary" id="calledDialogOk">我知道了</button></div></div></dialog>
   <div class="toast" id="toast"></div>
 
   <script src="config.js"></script>
@@ -107,6 +108,7 @@
     let refreshInFlight = false;
     let serviceWorkerRegistration = null;
     let pushSetupTicketId = null;
+    let lastRenderedStatus = null;
 
     async function api(path, options={}){
       if(!CONFIG.API_BASE) return demoApi(path, options);
@@ -171,6 +173,12 @@
       if(!ticket||!("speechSynthesis" in window)){showToast("此裝置不支援網頁語音播報");return}
       speechSynthesis.cancel();const utterance=new SpeechSynthesisUtterance(reminderSpeech(ticket,text));utterance.lang="zh-TW";utterance.rate=.92;utterance.pitch=1;speechSynthesis.speak(utterance);$("#speakBtn").classList.add("show");showToast("正在播報到店提醒");
     }
+    function announceCalled(ticket){
+      $("#calledDialogText").textContent=`您的號碼 ${ticket.number} 已可入席，請於 10 分鐘內至櫃檯報到。`;
+      const dialog=$("#calledDialog");if(!dialog.open)dialog.showModal();
+      if(navigator.vibrate)navigator.vibrate([200,100,200,100,200]);
+      speakReminder(ticket);
+    }
     function readDemoQueue(){
       const queue=JSON.parse(localStorage.getItem(DEMO_QUEUE_KEY)||"[]"),saved=JSON.parse(localStorage.getItem(DEMO_KEY)||"null");
       if(saved&&!queue.some(ticket=>ticket.id===saved.id)) queue.push(saved);
@@ -208,15 +216,16 @@
       if(["cancelled","seated"].includes(ticket.status)){resetView();if(ticket.status==="cancelled"&&ticket.missedCount>=2)showToast("再次過號，號碼已取消，請重新取號");return false}
       activeTicket=ticket;$("#formCard").style.display="none";$("#queueCard").classList.add("show");$("#s2").classList.add("active");
       const called=ticket.status==="called",missed=ticket.status==="missed",minutes=remainingMinutes(ticket),holdUntil=called&&ticket.calledAt?new Date(new Date(ticket.calledAt).getTime()+SEAT_HOLD_MINUTES*60000):null;
+      const becameCalled=called&&lastRenderedStatus!==ticket.status;lastRenderedStatus=ticket.status;
       $("#queueCard").classList.toggle("is-missed",missed);$("#s3").classList.toggle("active",called);$("#pageTitle").textContent=called?`${ticket.name}，席位保留中`:missed?`${ticket.name}，目前已過號`:`${ticket.name}，候位已完成`;$("#pageSub").textContent=called?"請在席位保留時間內至櫃檯報到。":missed?"順位已延後 3 位，號碼會保留至取消或再次過號。":"請留意叫號進度與免費到店推播。";
       $("#ticketNo").textContent=ticket.number;$("#currentNo").textContent=ticket.currentNumber;$("#ahead").textContent=missed?(ticket.queuePosition||ticket.ahead+1):ticket.ahead;$("#aheadLabel").textContent=missed?"目前候位順位":"前方等候組數";$("#estimate").textContent=called?"保留中":minutes>0?`約 ${minutes} 分`:"即將叫號";$("#arrival").textContent=holdUntil?holdUntil.toLocaleTimeString("zh-TW",{hour:"2-digit",minute:"2-digit",hour12:false}):ticket.estimatedEntryAt?new Date(ticket.estimatedEntryAt).toLocaleTimeString("zh-TW",{hour:"2-digit",minute:"2-digit",hour12:false}):getArrival(minutes);$("#arrivalLabel").textContent=called?"席位保留至":"建議到店時間";
       $("#notice").textContent=called?`已為您保留席位至 ${$("#arrival").textContent}；超過 10 分鐘未報到將${ticket.missedCount>=1?"自動取消此號碼":"過號並延後 3 位"}。`:missed?"您已過號一次，順位已延後 3 位。再次叫號後若仍未於 10 分鐘內報到，系統將自動取消此號碼，屆時需重新取號。":"預計入席前 5 分鐘，系統將發送到店推播；點開後會語音播報完整內容。系統通知音與震動仍依手機設定為準。";
       $("#timebar").style.width=called?"100%":`${Math.max(8,Math.min(95,100-ticket.ahead*12))}%`;$("#updatedAt").textContent=`最後更新：${nowText()}`;
       setStoredTicketId(ticket.id);
       history.replaceState(null,"","#ticket="+encodeURIComponent(ticket.id));
-      $("#speakBtn").classList.add("show");syncPushState(ticket);scheduleExpiryCheck(ticket);return true;
+      $("#speakBtn").classList.add("show");syncPushState(ticket);scheduleExpiryCheck(ticket);if(becameCalled)announceCalled(ticket);return true;
     }
-    function resetView(){clearTimeout(expiryTimer);expiryTimer=null;activeTicket=null;pushSetupTicketId=null;localStorage.removeItem(DEMO_KEY);clearStoredTicketId();$("#queueCard").classList.remove("show","is-missed");$("#speakBtn").classList.remove("show");$("#formCard").style.display="block";$("#s2").classList.remove("active");$("#s3").classList.remove("active");$("#pageTitle").textContent="線上候位取號";$("#pageSub").textContent="留下聯絡資料，立即取得候位號碼。";history.replaceState(null,"",location.pathname)}
+    function resetView(){clearTimeout(expiryTimer);expiryTimer=null;activeTicket=null;pushSetupTicketId=null;lastRenderedStatus=null;localStorage.removeItem(DEMO_KEY);clearStoredTicketId();$("#queueCard").classList.remove("show","is-missed");$("#speakBtn").classList.remove("show");$("#formCard").style.display="block";$("#s2").classList.remove("active");$("#s3").classList.remove("active");$("#pageTitle").textContent="線上候位取號";$("#pageSub").textContent="留下聯絡資料，立即取得候位號碼。";history.replaceState(null,"",location.pathname)}
     async function refreshTicket(notify=true){if(!activeTicket||refreshInFlight)return;refreshInFlight=true;try{const t=await api(`/queue/${encodeURIComponent(activeTicket.id)}`);const shown=renderTicket(t);if(notify&&shown)showToast("候位進度已更新")}catch(err){if(notify)showToast(err.message)}finally{refreshInFlight=false}}
 
     $("#queueForm").addEventListener("submit",async e=>{
@@ -231,6 +240,7 @@
     $("#enablePushBtn").addEventListener("click",()=>enablePush(activeTicket));
     $("#speakBtn").addEventListener("click",()=>speakReminder(activeTicket));
     $("#cancelBtn").addEventListener("click",()=>$("#cancelDialog").showModal());$("#keepBtn").addEventListener("click",()=>$("#cancelDialog").close());
+    $("#calledDialogOk").addEventListener("click",()=>$("#calledDialog").close());$("#calledDialog").addEventListener("close",()=>speechSynthesis.cancel());
     $("#confirmCancelBtn").addEventListener("click",async()=>{try{await api(`/queue/${encodeURIComponent(activeTicket.id)}`,{method:"DELETE"});$("#cancelDialog").close();resetView();showToast("候位已取消")}catch(err){showToast(err.message)}});
     window.addEventListener("DOMContentLoaded",async()=>{getServiceWorker().catch(()=>{});const params=new URLSearchParams(location.hash.slice(1)),shouldSpeak=params.get("speak")==="1",id=params.get("ticket")||getStoredTicketId();if(!CONFIG.API_BASE){const saved=JSON.parse(localStorage.getItem(DEMO_KEY)||"null");if(saved&&["waiting","called","missed"].includes(saved.status)){try{const ticket=await demoApi(`/queue/${encodeURIComponent(saved.id)}`,{});renderTicket(ticket);if(shouldSpeak)setTimeout(()=>speakReminder(ticket),250)}catch{}}return}if(id){try{const ticket=await api(`/queue/${encodeURIComponent(id)}`);renderTicket(ticket);if(shouldSpeak)setTimeout(()=>speakReminder(ticket),250)}catch{clearStoredTicketId();history.replaceState(null,"",location.pathname)}}});
     navigator.serviceWorker?.addEventListener("message",event=>{if(event.data?.type==="SPEAK_REMINDER"&&activeTicket)speakReminder(activeTicket,event.data.text||"")});
