@@ -138,7 +138,8 @@ async function getPublicTicket(env, id) {
       ) AS live_current_number,
       CASE WHEN t.status IN ('waiting', 'missed') THEN (
         SELECT COUNT(*) FROM tickets q
-        WHERE q.status IN ('waiting', 'missed')
+        WHERE q.date_key = t.date_key
+          AND q.status IN ('waiting', 'missed')
           AND (q.queue_order < t.queue_order OR (q.queue_order = t.queue_order AND q.joined_at < t.joined_at))
       ) ELSE 0 END AS live_ahead
     FROM tickets t WHERE t.id = ?
@@ -343,7 +344,7 @@ async function processDueReminders(env) {
 
 async function postponeMissedTicket(env, ticket, now) {
   const [result, settingsResult] = await env.DB.batch([
-    env.DB.prepare("SELECT id, queue_order, joined_at FROM tickets WHERE status IN ('waiting', 'missed') AND id != ? ORDER BY queue_order, joined_at").bind(ticket.id),
+    env.DB.prepare("SELECT id, queue_order, joined_at FROM tickets WHERE date_key = ? AND status IN ('waiting', 'missed') AND id != ? ORDER BY queue_order, joined_at").bind(ticket.dateKey, ticket.id),
     env.DB.prepare("SELECT key, value FROM settings")
   ]);
   const queue = result.results || [];
@@ -356,7 +357,7 @@ async function postponeMissedTicket(env, ticket, now) {
   const estimatedEntryAt = new Date(new Date(now).getTime() + estimatedMinutes * 60_000).toISOString();
   const statements = [];
   if (targetOrder > ticket.queueOrder) {
-    statements.push(env.DB.prepare("UPDATE tickets SET queue_order = queue_order - 1 WHERE status IN ('waiting', 'missed') AND queue_order > ? AND queue_order <= ?").bind(ticket.queueOrder, targetOrder));
+    statements.push(env.DB.prepare("UPDATE tickets SET queue_order = queue_order - 1 WHERE date_key = ? AND status IN ('waiting', 'missed') AND queue_order > ? AND queue_order <= ?").bind(ticket.dateKey, ticket.queueOrder, targetOrder));
   }
   statements.push(env.DB.prepare("UPDATE tickets SET status = 'missed', queue_order = ?, missed_count = 1, missed_at = ?, estimated_minutes = ?, estimated_entry_at = ?, reminder_sent_at = NULL, reminder_provider = NULL, reminder_provider_id = NULL, reminder_error = NULL, updated_at = ? WHERE id = ? AND status IN ('waiting', 'called') AND missed_count = 0").bind(targetOrder, now, estimatedMinutes, estimatedEntryAt, now, ticket.id));
   await env.DB.batch(statements);
@@ -435,7 +436,7 @@ async function handleApi(request, env, url, ctx) {
       )
       WITH computed AS (
         SELECT
-          (SELECT COUNT(*) FROM tickets WHERE status IN ('waiting', 'missed')) AS ahead_count,
+          (SELECT COUNT(*) FROM tickets WHERE date_key = ? AND status IN ('waiting', 'missed')) AS ahead_count,
           COALESCE((SELECT MAX(queue_order) FROM tickets), 0) + 1000 AS next_order,
           COALESCE((SELECT MAX(CAST(SUBSTR(number, 2) AS INTEGER)) FROM tickets WHERE date_key = ?), 0) + 1 AS next_sequence,
           COALESCE(CAST((SELECT value FROM settings WHERE key = 'defaultWaitMinutes') AS INTEGER), ?) AS default_wait,
@@ -450,7 +451,7 @@ async function handleApi(request, env, url, ctx) {
       FROM timing
       RETURNING *
     `).bind(
-      today, DEFAULT_SETTINGS.defaultWaitMinutes, DEFAULT_SETTINGS.avgMinutesPerGroup, DEFAULT_SETTINGS.currentNumber,
+      today, today, DEFAULT_SETTINGS.defaultWaitMinutes, DEFAULT_SETTINGS.avgMinutesPerGroup, DEFAULT_SETTINGS.currentNumber,
       crypto.randomUUID(), today, body.storeId || DEFAULT_SETTINGS.storeId, name, phone, timestamp, timestamp, timestamp
     ).run();
     const row = result.results?.[0];
@@ -506,7 +507,7 @@ async function handleApi(request, env, url, ctx) {
     const todayKey = dateKey();
     const [result, activeOrder, counts, today, settingsResult, currentResult, numberResult] = await env.DB.batch([
       ticketStatement,
-      env.DB.prepare("SELECT id FROM tickets WHERE status IN ('waiting', 'missed') ORDER BY queue_order, joined_at"),
+      env.DB.prepare("SELECT id FROM tickets WHERE date_key = ? AND status IN ('waiting', 'missed') ORDER BY queue_order, joined_at").bind(todayKey),
       env.DB.prepare("SELECT status, COUNT(*) AS count FROM tickets GROUP BY status"),
       env.DB.prepare("SELECT COUNT(*) AS count FROM tickets WHERE date_key = ?").bind(todayKey),
       env.DB.prepare("SELECT key, value FROM settings"),
